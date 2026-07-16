@@ -18,10 +18,10 @@ function createWindow(): void {
     minHeight: 720,
     show: false,
     titleBarStyle: "hiddenInset",
-    backgroundColor: "#111210",
+    backgroundColor: "#0a0d0a",
     icon,
     webPreferences: {
-      preload: join(__dirname, "../preload/index.mjs"),
+      preload: join(__dirname, "../preload/index.cjs"),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,

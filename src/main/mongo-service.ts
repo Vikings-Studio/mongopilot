@@ -1,5 +1,5 @@
 import { EJSON } from "bson"
-import { MongoClient, type Document, type Filter, type UpdateFilter } from "mongodb"
+import { MongoClient, type Document, type Filter, type Sort, type UpdateFilter } from "mongodb"
 import type { AccessMode, CollectionInfo, DatabaseInfo, FindInput, FindResult, SavedConnection } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
 
@@ -20,7 +20,17 @@ export class MongoService {
     await client.connect()
     const connection = await this.store.markConnected(id)
     this.active.set(id, { client, connection })
-    const databases = await this.listDatabases(id)
+    let databases: DatabaseInfo[]
+    try {
+      databases = await this.listDatabases(id)
+    } catch (error) {
+      const databaseName = client.options.dbName
+      if (!databaseName) {
+        await this.disconnect(id)
+        throw error
+      }
+      databases = [{ name: databaseName }]
+    }
     return { connection, databases }
   }
 
@@ -46,15 +56,30 @@ export class MongoService {
     if (!filter || Array.isArray(filter) || typeof filter !== "object") {
       throw new Error("Filter must be a JSON object.")
     }
+    const sort = input.sort.trim() ? EJSON.parse(input.sort) : {}
+    if (!sort || Array.isArray(sort) || typeof sort !== "object") {
+      throw new Error("Sort must be a JSON object.")
+    }
+    for (const direction of Object.values(sort)) {
+      if (direction !== 1 && direction !== -1 && direction !== "asc" && direction !== "desc" && direction !== "ascending" && direction !== "descending") {
+        throw new Error('Sort directions must be 1, -1, "asc", or "desc".')
+      }
+    }
     const started = performance.now()
-    const documents = await active.client
-      .db(input.database)
-      .collection(input.collection)
-      .find(filter as Record<string, unknown>)
-      .limit(Math.min(Math.max(input.limit, 1), 100))
-      .toArray()
+    const collection = active.client.db(input.database).collection(input.collection)
+    const limit = Math.min(Math.max(input.limit, 1), 100)
+    const [documents, total] = await Promise.all([
+      collection
+        .find(filter as Record<string, unknown>)
+        .sort(sort as Sort)
+        .skip(Math.max(input.skip, 0))
+        .limit(limit)
+        .toArray(),
+      collection.countDocuments(filter as Record<string, unknown>, { maxTimeMS: 30_000 }),
+    ])
     return {
       documents: EJSON.parse(EJSON.stringify(documents, { relaxed: true })) as unknown[],
+      total,
       durationMs: Math.round(performance.now() - started),
     }
   }

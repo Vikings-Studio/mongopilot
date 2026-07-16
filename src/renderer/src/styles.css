@@ -7,18 +7,18 @@
 @theme {
   --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, monospace;
-  --color-canvas: #111210;
-  --color-shell: #151714;
-  --color-panel: #191b18;
-  --color-raised: #20231f;
-  --color-line: #30342e;
-  --color-line-strong: #454b42;
+  --color-canvas: #0a0d0a;
+  --color-shell: #0e110e;
+  --color-panel: #121612;
+  --color-raised: #181d18;
+  --color-line: #262c26;
+  --color-line-strong: #394139;
   --color-ink: #edf0e9;
   --color-muted: #a2aa9c;
   --color-faint: #899184;
   --color-accent: #7ead65;
   --color-accent-strong: #a1ca88;
-  --color-accent-soft: #243021;
+  --color-accent-soft: #192218;
   --color-danger: #dc7c73;
   --color-warning: #d1a85a;
   --ease-product: cubic-bezier(0.23, 1, 0.32, 1);

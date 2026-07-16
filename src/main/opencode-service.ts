@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto"
-import { delimiter, join } from "node:path"
-import { createOpencodeClient, createOpencodeServer, type OpencodeClient } from "@opencode-ai/sdk/v2"
+import { spawn, type ChildProcess } from "node:child_process"
+import { join } from "node:path"
+import { app } from "electron"
+import { createOpencodeClient, type Config, type OpencodeClient } from "@opencode-ai/sdk/v2"
 import type { CopilotPromptInput, CopilotReply, CopilotStatus } from "../shared/types"
 import { MongoMcpServer } from "./mongo-mcp-server"
 
@@ -35,20 +37,12 @@ export class OpencodeService {
   private async startServer(): Promise<CopilotStatus> {
     this.currentStatus = { state: "starting" }
     try {
-      if (process.resourcesPath) {
-        const bundledBinaryDirectory = join(process.resourcesPath, "opencode")
-        process.env.PATH = `${bundledBinaryDirectory}${delimiter}${process.env.PATH ?? ""}`
-      }
       const username = "mongo-pilot"
       const password = randomBytes(32).toString("base64url")
       process.env.OPENCODE_SERVER_USERNAME = username
       process.env.OPENCODE_SERVER_PASSWORD = password
       const mongoMcp = await this.mongoMcp.start()
-      const server = await createOpencodeServer({
-        hostname: "127.0.0.1",
-        port: 0,
-        timeout: 10_000,
-        config: {
+      const server = await this.launchServer({
           permission: {
             "*": "deny",
             question: "allow",
@@ -65,7 +59,6 @@ export class OpencodeService {
               timeout: 30_000,
             },
           },
-        },
       })
       this.client = createOpencodeClient({
         baseUrl: server.url,
@@ -158,5 +151,44 @@ export class OpencodeService {
 
   private message(error: unknown): string {
     return error instanceof Error ? error.message : "OpenCode failed to start."
+  }
+
+  private async launchServer(config: Config): Promise<{ url: string; close(): void }> {
+    const executable = app.isPackaged
+      ? join(process.resourcesPath, "opencode", process.platform === "win32" ? "opencode.exe" : "opencode")
+      : join(app.getAppPath(), "node_modules", "opencode-ai", "bin", "opencode.exe")
+    const processHandle = spawn(executable, ["serve", "--hostname=127.0.0.1", "--port=0"], {
+      env: { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const url = await this.waitForServer(processHandle)
+    return { url, close: () => processHandle.kill() }
+  }
+
+  private waitForServer(processHandle: ChildProcess): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let output = ""
+      let settled = false
+      const timeout = setTimeout(() => fail(new Error(`OpenCode did not start within 30 seconds.${output.trim() ? `\n${output.trim()}` : ""}`)), 30_000)
+      const fail = (error: Error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        processHandle.kill()
+        reject(error)
+      }
+      const inspect = (chunk: Buffer) => {
+        output += chunk.toString()
+        const match = output.match(/opencode server listening on (https?:\/\/[^\s]+)/)
+        if (!match || settled) return
+        settled = true
+        clearTimeout(timeout)
+        resolve(match[1])
+      }
+      processHandle.stdout?.on("data", inspect)
+      processHandle.stderr?.on("data", inspect)
+      processHandle.once("error", fail)
+      processHandle.once("exit", (code) => fail(new Error(`OpenCode exited with code ${code}.${output.trim() ? `\n${output.trim()}` : ""}`)))
+    })
   }
 }

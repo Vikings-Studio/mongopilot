@@ -39,11 +39,14 @@ export interface FindInput {
   database: string
   collection: string
   filter: string
+  sort: string
+  skip: number
   limit: number
 }
 
 export interface FindResult {
   documents: unknown[]
+  total: number
   durationMs: number
 }
 

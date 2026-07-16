@@ -7,13 +7,14 @@ Mongo Pilot is an Electron desktop workspace for MongoDB with an embedded OpenCo
 - Save MongoDB connection strings encrypted through Electron `safeStorage`
 - Connect with the official MongoDB Node.js driver
 - List databases and collections
-- Run bounded `find` filters with Extended JSON input
-- Enforce read access modes again in the Electron main process
+- Load collections automatically with bounded, paginated `find` queries
+- Persist page-size and Extended JSON sort defaults per collection
+- Enforce read and read/write access modes in the Electron main process
 - Start a bundled OpenCode loopback server through `@opencode-ai/sdk/v2`
 - Create OpenCode sessions and send workspace-aware prompts
 - Expose authenticated MongoDB MCP tools to OpenCode based on the selected agent access mode
 - Permit only read tools in read mode and both read and bounded mutation tools in read/write mode
-- Preview the intended documents, aggregations, schema, indexes, and reports information architecture
+- Provide documents, aggregations, schema, indexes, and reports workspaces for live connections
 
 The first agent tool set includes database and collection discovery, bounded finds, bounded aggregations, counts, and single-document inserts, updates, and deletes. Bulk mutations and report generation are not implemented yet.
 
@@ -45,6 +46,7 @@ npm run build
 - OpenCode tools default to denied; web access requires approval.
 - MongoDB MCP requests require an app-generated bearer token and a short-lived active connection grant.
 - Agent permissions are enforced both in OpenCode tool exposure and inside each MongoDB operation.
+- Decrypted MongoDB connection strings remain inside the Electron main process and are never sent to OpenCode or the MCP server.
 - OpenCode agents are not sandboxes. Use OS/container isolation for untrusted workloads.
 
 ## Documentation Sources

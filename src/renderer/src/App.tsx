@@ -3,6 +3,7 @@ import {
   ArrowsOutSimple,
   BracketsCurly,
   CaretDown,
+  CaretLeft,
   CaretRight,
   ChartLineUp,
   Check,
@@ -35,26 +36,10 @@ import type {
   SaveConnectionInput,
 } from "../../shared/types"
 
-const demoDatabases: DatabaseInfo[] = [
-  { name: "analytics", sizeOnDisk: 837_812_224 },
-  { name: "commerce", sizeOnDisk: 194_263_040 },
-  { name: "operations", sizeOnDisk: 68_157_440 },
-]
-
-const demoCollections: CollectionInfo[] = [
-  { name: "events", type: "collection" },
-  { name: "sessions", type: "collection" },
-  { name: "weekly_rollups", type: "collection" },
-]
-
-const demoDocuments = [
-  { _id: "evt_01J7F2QK8M", event: "checkout.completed", region: "eu-west", value: 184.2, createdAt: "2026-07-16T09:42:18Z" },
-  { _id: "evt_01J7F2NG3R", event: "subscription.renewed", region: "us-east", value: 72.8, createdAt: "2026-07-16T09:41:53Z" },
-  { _id: "evt_01J7F2JX9A", event: "cart.abandoned", region: "ap-south", value: 47.35, createdAt: "2026-07-16T09:40:27Z" },
-  { _id: "evt_01J7F2H1VP", event: "checkout.completed", region: "us-west", value: 231.6, createdAt: "2026-07-16T09:38:04Z" },
-]
-
 type Message = { role: "assistant" | "user"; text: string }
+type CollectionPreferences = { sort: string; pageSize: number }
+
+const pageSizes = [10, 20, 50, 100] as const
 
 function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) {
   return (
@@ -137,7 +122,7 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
               onChange={(event) => setName(event.target.value)}
               autoComplete="off"
               spellCheck={false}
-              placeholder="Production analytics"
+              placeholder="My MongoDB"
               className="h-11 w-full rounded-md border border-line-strong bg-canvas px-3 text-sm placeholder:text-faint focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/25 focus-visible:outline-none"
             />
           </div>
@@ -145,7 +130,7 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
             <label htmlFor="connection-uri" className="block text-xs font-medium">Connection string <span className="text-danger">*</span></label>
             <input
               id="connection-uri"
-              type="password"
+              type="text"
               value={uri}
               onChange={(event) => setUri(event.target.value)}
               autoComplete="off"
@@ -267,7 +252,7 @@ function CopilotPanel({
       </div>
       <form onSubmit={send} className="border-t border-line p-3">
         <label htmlFor="pilot-prompt" className="sr-only">Ask Pilot</label>
-        <div className="rounded-lg border border-line-strong bg-panel focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+        <div className="rounded-lg border border-line-strong bg-panel">
           <div className="flex min-h-8 items-center gap-2 border-b border-line px-3 font-mono text-[10px] text-muted">
             <HardDrives size={13} className="shrink-0 text-accent" aria-hidden="true" />
             <span className="truncate">
@@ -287,7 +272,7 @@ function CopilotPanel({
               }
             }}
             rows={3}
-            placeholder="Draft an aggregation for weekly revenue..."
+            placeholder="Ask about your MongoDB data..."
             className="w-full resize-none bg-transparent px-3 pt-3 text-xs leading-5 placeholder:text-faint focus:outline-none"
           />
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
@@ -336,16 +321,21 @@ function CopilotPanel({
 export default function App() {
   const [connections, setConnections] = useState<SavedConnection[]>([])
   const [activeConnection, setActiveConnection] = useState<SavedConnection | null>(null)
-  const [databases, setDatabases] = useState<DatabaseInfo[]>(demoDatabases)
-  const [collections, setCollections] = useState<CollectionInfo[]>(demoCollections)
-  const [selectedDatabase, setSelectedDatabase] = useState("analytics")
-  const [selectedCollection, setSelectedCollection] = useState("events")
-  const [documents, setDocuments] = useState<unknown[]>(demoDocuments)
-  const [filter, setFilter] = useState('{ "createdAt": { "$gte": "2026-07-16T00:00:00Z" } }')
+  const [databases, setDatabases] = useState<DatabaseInfo[]>([])
+  const [collections, setCollections] = useState<CollectionInfo[]>([])
+  const [selectedDatabase, setSelectedDatabase] = useState("")
+  const [selectedCollection, setSelectedCollection] = useState("")
+  const [documents, setDocuments] = useState<unknown[]>([])
+  const [filter, setFilter] = useState("{}")
+  const [sort, setSort] = useState("{}")
+  const [pageSize, setPageSize] = useState(20)
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
   const [showConnectionDialog, setShowConnectionDialog] = useState(false)
   const [querying, setQuerying] = useState(false)
   const [error, setError] = useState("")
-  const [duration, setDuration] = useState(42)
+  const [duration, setDuration] = useState<number | null>(null)
+  const [queryRan, setQueryRan] = useState(false)
   const [copilotStatus, setCopilotStatus] = useState<CopilotStatus>({ state: "starting" })
   const [agentMode, setAgentMode] = useState<AccessMode>("read-only")
   const [activeTab, setActiveTab] = useState("Documents")
@@ -367,6 +357,10 @@ export default function App() {
       setAgentMode("read-only")
       setDatabases(result.databases)
       setDocuments([])
+      setDuration(null)
+      setQueryRan(false)
+      setTotal(0)
+      setPage(1)
       const first = result.databases[0]?.name
       if (first) await selectDatabase(connection.id, first)
       else {
@@ -384,35 +378,86 @@ export default function App() {
     if (!window.mongoPilot) return
     const next = await window.mongoPilot.database.listCollections(connectionId, name)
     setCollections(next)
-    setSelectedCollection(next[0]?.name ?? "")
-    setDocuments([])
+    const firstCollection = next[0]?.name
+    if (firstCollection) await selectCollection(connectionId, name, firstCollection)
+    else {
+      setSelectedCollection("")
+      setDocuments([])
+      setDuration(null)
+      setQueryRan(false)
+      setTotal(0)
+      setPage(1)
+    }
   }
 
-  async function runQuery() {
-    if (!activeConnection) {
-      setDuration(42)
-      setDocuments(demoDocuments)
-      return
-    }
+  async function selectCollection(connectionId: string, database: string, collection: string) {
+    const preferences = readCollectionPreferences(connectionId, database, collection)
+    setSelectedDatabase(database)
+    setSelectedCollection(collection)
+    setFilter("{}")
+    setSort(preferences.sort)
+    setPageSize(preferences.pageSize)
+    setPage(1)
+    setTotal(0)
+    setDocuments([])
+    setQueryRan(false)
+    await runQuery({ connectionId, database, collection, filter: "{}", sort: preferences.sort, pageSize: preferences.pageSize, page: 1 })
+  }
+
+  async function runQuery(options: Partial<{ connectionId: string; database: string; collection: string; filter: string; sort: string; pageSize: number; page: number }> = {}) {
+    const connectionId = options.connectionId ?? activeConnection?.id
+    if (!connectionId) return
     if (!window.mongoPilot) return
-    if (!selectedDatabase || !selectedCollection) return
+    const database = options.database ?? selectedDatabase
+    const collection = options.collection ?? selectedCollection
+    const nextFilter = options.filter ?? filter
+    const nextSort = options.sort ?? sort
+    const nextPageSize = options.pageSize ?? pageSize
+    const nextPage = options.page ?? page
+    if (!database || !collection) return
     setQuerying(true)
     setError("")
     try {
       const result = await window.mongoPilot.database.find({
-        connectionId: activeConnection.id,
-        database: selectedDatabase,
-        collection: selectedCollection,
-        filter,
-        limit: 20,
+        connectionId,
+        database,
+        collection,
+        filter: nextFilter,
+        sort: nextSort,
+        skip: (nextPage - 1) * nextPageSize,
+        limit: nextPageSize,
       })
       setDocuments(result.documents)
+      setTotal(result.total)
       setDuration(result.durationMs)
+      setQueryRan(true)
+      setPage(nextPage)
+      setPageSize(nextPageSize)
+      setSort(nextSort)
+      saveCollectionPreferences(connectionId, database, collection, { sort: nextSort, pageSize: nextPageSize })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Query failed.")
     } finally {
       setQuerying(false)
     }
+  }
+
+  function preferenceKey(connectionId: string, database: string, collection: string): string {
+    return `mongo-pilot:collection:${connectionId}:${database}:${collection}`
+  }
+
+  function readCollectionPreferences(connectionId: string, database: string, collection: string): CollectionPreferences {
+    try {
+      const stored = JSON.parse(localStorage.getItem(preferenceKey(connectionId, database, collection)) ?? "null") as Partial<CollectionPreferences> | null
+      const storedPageSize = pageSizes.includes(stored?.pageSize as (typeof pageSizes)[number]) ? stored!.pageSize! : 20
+      return { sort: typeof stored?.sort === "string" ? stored.sort : "{}", pageSize: storedPageSize }
+    } catch {
+      return { sort: "{}", pageSize: 20 }
+    }
+  }
+
+  function saveCollectionPreferences(connectionId: string, database: string, collection: string, preferences: CollectionPreferences): void {
+    localStorage.setItem(preferenceKey(connectionId, database, collection), JSON.stringify(preferences))
   }
 
   const context = {
@@ -447,32 +492,39 @@ export default function App() {
             <IconButton label="Add connection" onClick={() => setShowConnectionDialog(true)}><Plus size={16} aria-hidden="true" /></IconButton>
           </div>
           <div className="scrollbar-thin flex-1 overflow-y-auto py-2">
-            <button type="button" onClick={() => { setActiveConnection(null); setAgentMode("read-only"); setDatabases(demoDatabases); setCollections(demoCollections); setSelectedDatabase("analytics"); setSelectedCollection("events"); setDocuments(demoDocuments) }} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 px-3 text-left text-xs transition-[background-color,border-color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none ${!activeConnection ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
-              <Database size={17} weight="duotone" className="shrink-0 text-accent" aria-hidden="true" />
-              <span className="min-w-0 flex-1 max-md:hidden"><span className="block truncate font-medium">Preview workspace</span><span className="block truncate font-mono text-[10px] text-muted">LOCAL DEMO</span></span>
-            </button>
+            {connections.length === 0 && (
+              <div className="px-4 py-6 text-center max-md:hidden">
+                <HardDrives size={20} className="mx-auto mb-2 text-faint" aria-hidden="true" />
+                <p className="text-[11px] text-muted">No saved connections</p>
+              </div>
+            )}
             {connections.sort((a, b) => Number(b.favorite) - Number(a.favorite)).map((connection) => (
               <button key={connection.id} type="button" onClick={() => void connect(connection)} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 px-3 text-left text-xs transition-[background-color,border-color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
                 <HardDrives size={17} className="shrink-0 text-muted" aria-hidden="true" />
                 <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium">{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connection.host}</span></span>
               </button>
             ))}
-            <div className="mx-3 my-3 border-t border-line max-md:mx-2" />
-            <div className="px-3 max-md:hidden">
-              <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-faint">{selectedDatabase || "Databases"}</p>
-              {databases.map((database) => (
-                <div key={database.name}>
-                  <button type="button" onClick={() => activeConnection ? void selectDatabase(activeConnection.id, database.name) : setSelectedDatabase(database.name)} className="flex min-h-9 w-full items-center gap-2 rounded px-1 text-left text-[11px] text-muted transition-[background-color,color] duration-150 ease-product hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
-                    {database.name === selectedDatabase ? <CaretDown size={12} aria-hidden="true" /> : <CaretRight size={12} aria-hidden="true" />}<FolderSimple size={14} aria-hidden="true" /><span className="truncate">{database.name}</span>
-                  </button>
-                  {database.name === selectedDatabase && collections.map((collection) => (
-                    <button key={collection.name} type="button" onClick={() => { setSelectedCollection(collection.name); setDocuments([]) }} className={`ml-6 flex min-h-8 w-[calc(100%-1.5rem)] items-center gap-2 rounded px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${selectedCollection === collection.name ? "bg-raised text-ink" : "text-faint hover:text-muted"}`}>
-                      <CirclesThreePlus size={13} aria-hidden="true" /><span className="truncate">{collection.name}</span>
-                    </button>
+            {activeConnection && (
+              <>
+                <div className="mx-3 my-3 border-t border-line max-md:mx-2" />
+                <div className="px-3 max-md:hidden">
+                  <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-faint">{selectedDatabase || "Databases"}</p>
+                  {databases.map((database) => (
+                    <div key={database.name}>
+                      <button type="button" onClick={() => void selectDatabase(activeConnection.id, database.name)} className="flex min-h-9 w-full items-center gap-2 rounded px-1 text-left text-[11px] text-muted transition-[background-color,color] duration-150 ease-product hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
+                        {database.name === selectedDatabase ? <CaretDown size={12} aria-hidden="true" /> : <CaretRight size={12} aria-hidden="true" />}<FolderSimple size={14} aria-hidden="true" /><span className="truncate">{database.name}</span>
+                      </button>
+                      {database.name === selectedDatabase && collections.map((collection) => (
+                        <button key={collection.name} type="button" onClick={() => void selectCollection(activeConnection.id, database.name, collection.name)} className={`ml-6 flex min-h-8 w-[calc(100%-1.5rem)] items-center gap-2 rounded px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${selectedCollection === collection.name ? "bg-raised text-ink" : "text-faint hover:text-muted"}`}>
+                          <CirclesThreePlus size={13} aria-hidden="true" /><span className="truncate">{collection.name}</span>
+                        </button>
+                      ))}
+                    </div>
                   ))}
+                  {databases.length === 0 && <p className="px-1 py-3 text-[11px] leading-5 text-faint">No databases are visible to this connection.</p>}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
           </div>
           <div className="border-t border-line p-2">
             <button type="button" onClick={() => setShowConnectionDialog(true)} className="flex min-h-10 w-full items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-muted transition-[border-color,background-color,color] duration-150 ease-product hover:border-line-strong hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"><Plus size={14} aria-hidden="true" /><span className="max-md:hidden">New connection</span></button>
@@ -481,34 +533,72 @@ export default function App() {
 
         <section className="flex min-h-0 min-w-0 flex-col bg-canvas">
           <header className="flex h-12 items-center gap-3 border-b border-line px-4">
-            <div className="flex min-w-0 items-center gap-2 text-xs"><span className="truncate text-muted">{activeConnection?.name ?? "Preview workspace"}</span><CaretRight size={11} className="text-faint" aria-hidden="true" /><span className="truncate font-medium">{selectedDatabase}.{selectedCollection}</span></div>
-            <div className="ml-auto flex items-center gap-1"><AccessBadge mode={context.accessMode} /><IconButton label="More collection options"><DotsThree size={18} weight="bold" aria-hidden="true" /></IconButton></div>
+            {activeConnection ? (
+              <div className="flex min-w-0 items-center gap-2 text-xs"><span className="truncate text-muted">{activeConnection.name}</span>{selectedDatabase && <><CaretRight size={11} className="text-faint" aria-hidden="true" /><span className="truncate font-medium">{selectedDatabase}{selectedCollection ? `.${selectedCollection}` : ""}</span></>}</div>
+            ) : (
+              <span className="text-xs font-medium">MongoDB workspace</span>
+            )}
+            {activeConnection && <div className="ml-auto flex items-center gap-1"><AccessBadge mode={context.accessMode} /><IconButton label="More collection options"><DotsThree size={18} weight="bold" aria-hidden="true" /></IconButton></div>}
           </header>
-          <nav aria-label="Collection views" className="scrollbar-thin flex h-11 shrink-0 items-end gap-5 overflow-x-auto border-b border-line px-4">
-            {["Documents", "Aggregations", "Schema", "Indexes", "Reports"].map((tab) => (
-              <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`h-11 shrink-0 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${activeTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
-            ))}
-          </nav>
-
-          {activeTab === "Documents" ? (
+          {!activeConnection ? (
+            <div className="grid flex-1 place-items-center p-8">
+              <div className="max-w-sm text-center">
+                <Database size={30} weight="duotone" className="mx-auto mb-4 text-accent" aria-hidden="true" />
+                <h1 className="text-lg font-semibold tracking-tight">Connect to MongoDB</h1>
+                <p className="mt-2 text-xs leading-5 text-muted">{connections.length ? "Select a saved connection from the sidebar, or add another deployment." : "Add a MongoDB connection string to browse databases, collections, and documents."}</p>
+                <button type="button" onClick={() => setShowConnectionDialog(true)} className="mt-5 inline-flex h-10 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas focus-visible:outline-none"><Plus size={14} aria-hidden="true" />New connection</button>
+              </div>
+            </div>
+          ) : (
             <>
+              <nav aria-label="Collection views" className="scrollbar-thin flex h-11 shrink-0 items-end gap-5 overflow-x-auto border-b border-line px-4">
+                {["Documents", "Aggregations", "Schema", "Indexes", "Reports"].map((tab) => (
+                  <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`h-11 shrink-0 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${activeTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
+                ))}
+              </nav>
+              {activeTab === "Documents" ? <>
               <div className="border-b border-line bg-shell p-3">
-                <div className="flex items-start gap-2">
+                <div className="grid grid-cols-[minmax(0,2fr)_minmax(140px,1fr)_auto] items-start gap-2">
                   <div className="min-w-0 flex-1 rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
                     <div className="flex h-8 items-center border-b border-line px-3 font-mono text-[10px] uppercase tracking-wider text-faint"><Funnel size={13} className="mr-2" aria-hidden="true" />Filter</div>
                     <label htmlFor="filter" className="sr-only">MongoDB document filter</label>
                     <textarea id="filter" value={filter} onChange={(event) => setFilter(event.target.value)} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none" />
                   </div>
-                  <button type="button" onClick={() => void runQuery()} disabled={querying} aria-busy={querying} className="flex h-10 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-shell focus-visible:outline-none disabled:cursor-not-allowed disabled:bg-line-strong disabled:text-muted"><Lightning size={14} weight="fill" aria-hidden="true" />{querying ? "Running" : "Run"}</button>
+                  <div className="min-w-0 rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+                    <div className="flex h-8 items-center border-b border-line px-3 font-mono text-[10px] uppercase tracking-wider text-faint">Sort</div>
+                    <label htmlFor="sort" className="sr-only">MongoDB document sort</label>
+                    <textarea id="sort" value={sort} onChange={(event) => setSort(event.target.value)} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none" />
+                  </div>
+                  <button type="button" onClick={() => void runQuery({ page: 1 })} disabled={querying || !selectedDatabase || !selectedCollection} aria-busy={querying} className="flex h-10 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-shell focus-visible:outline-none disabled:cursor-not-allowed disabled:bg-line-strong disabled:text-muted"><Lightning size={14} weight="fill" aria-hidden="true" />{querying ? "Running" : "Run"}</button>
                 </div>
                 {error && <div role="alert" className="mt-2 flex items-center justify-between rounded border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"><span>{error}</span><button type="button" onClick={() => setError("")} className="rounded p-1 focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none" aria-label="Dismiss error"><X size={14} /></button></div>}
               </div>
               <div className="flex h-10 items-center border-b border-line px-3">
-                <div className="flex items-center gap-1"><IconButton label="Refresh documents"><ArrowClockwise size={15} aria-hidden="true" /></IconButton><IconButton label="Expand document view"><ArrowsOutSimple size={15} aria-hidden="true" /></IconButton></div>
+                <div className="flex items-center gap-1"><IconButton label="Refresh documents" onClick={() => void runQuery()}><ArrowClockwise size={15} aria-hidden="true" /></IconButton><IconButton label="Expand document view"><ArrowsOutSimple size={15} aria-hidden="true" /></IconButton></div>
                 <div className="mx-2 h-4 border-l border-line" />
                 <button type="button" className="flex h-8 items-center gap-1.5 rounded bg-raised px-2.5 text-xs text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"><BracketsCurly size={14} aria-hidden="true" />JSON</button>
                 <button type="button" className="flex h-8 items-center gap-1.5 rounded px-2.5 text-xs text-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"><Table size={14} aria-hidden="true" />Table</button>
-                <p className="ml-auto font-mono text-[10px] text-faint">{documents.length} DOCUMENTS · {duration} MS</p>
+                <div className="ml-auto flex items-center gap-2">
+                  <label htmlFor="page-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Rows</label>
+                  <select
+                    id="page-size"
+                    value={pageSize}
+                    onChange={(event) => {
+                      const nextPageSize = Number(event.target.value)
+                      void runQuery({ page: 1, pageSize: nextPageSize })
+                    }}
+                    disabled={querying || !selectedCollection}
+                    className="h-7 rounded border border-line bg-canvas px-1.5 font-mono text-[10px] text-muted focus-visible:border-accent focus-visible:outline-none"
+                  >
+                    {pageSizes.map((size) => <option key={size} value={size}>{size}</option>)}
+                  </select>
+                  <div className="flex items-center gap-1">
+                    <button type="button" aria-label="Previous page" onClick={() => void runQuery({ page: page - 1 })} disabled={querying || page <= 1} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-30"><CaretLeft size={12} aria-hidden="true" /></button>
+                    <span className="min-w-16 text-center font-mono text-[10px] text-faint">{queryRan ? `${page} / ${Math.max(1, Math.ceil(total / pageSize))}` : "- / -"}</span>
+                    <button type="button" aria-label="Next page" onClick={() => void runQuery({ page: page + 1 })} disabled={querying || !queryRan || page * pageSize >= total} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-30"><CaretRight size={12} aria-hidden="true" /></button>
+                  </div>
+                  <p className="font-mono text-[9px] text-faint">{queryRan ? `${total} TOTAL${duration !== null ? ` · ${duration} MS` : ""}` : "NOT RUN"}</p>
+                </div>
               </div>
               <div className="scrollbar-thin flex-1 overflow-auto p-3">
                 {querying ? (
@@ -517,22 +607,27 @@ export default function App() {
                   <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-panel">
                     {documents.map((document, index) => (
                       <article key={index} className="grid grid-cols-[36px_minmax(0,1fr)] text-xs">
-                        <div className="border-r border-line bg-shell py-3 text-center font-mono text-faint">{String(index + 1).padStart(2, "0")}</div>
+                        <div className="border-r border-line bg-shell py-3 text-center font-mono text-faint">{String((page - 1) * pageSize + index + 1).padStart(2, "0")}</div>
                         <pre className="scrollbar-thin overflow-x-auto whitespace-pre-wrap px-4 py-3 font-mono leading-5 text-muted">{JSON.stringify(document, null, 2)}</pre>
                       </article>
                     ))}
                   </div>
+                ) : queryRan ? (
+                  <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-line">
+                    <div className="max-w-sm text-center"><MagnifyingGlass size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">No matching documents</h3><p className="mt-1 text-xs leading-5 text-muted">The query completed successfully and returned no documents.</p></div>
+                  </div>
                 ) : (
                   <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-line">
-                    <div className="max-w-sm text-center"><Code size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">No documents loaded</h3><p className="mt-1 text-sm leading-6 text-muted">Run the filter to inspect this collection. Results are limited to 20 documents in this first pass.</p><button type="button" onClick={() => void runQuery()} className="mt-4 h-10 rounded-md border border-line-strong px-4 text-xs font-medium hover:bg-panel focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">Run query</button></div>
+                    <div className="max-w-sm text-center"><Code size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">No query results yet</h3><p className="mt-1 text-xs leading-5 text-muted">{selectedCollection ? "Loading the selected collection." : "Select a collection from the sidebar to begin."}</p></div>
                   </div>
                 )}
               </div>
+              </> : (
+                <div className="grid flex-1 place-items-center p-8">
+                  <div className="max-w-md text-center"><ChartLineUp size={30} className="mx-auto mb-4 text-accent" aria-hidden="true" /><p className="font-mono text-xs uppercase tracking-widest text-accent">{activeTab}</p><h2 className="mt-2 text-xl font-semibold tracking-tight">No data loaded</h2><p className="mt-2 text-xs leading-5 text-muted">This view will use the active MongoDB connection.</p></div>
+                </div>
+              )}
             </>
-          ) : (
-            <div className="grid flex-1 place-items-center p-8">
-              <div className="max-w-md text-center"><ChartLineUp size={30} className="mx-auto mb-4 text-accent" aria-hidden="true" /><p className="font-mono text-xs uppercase tracking-widest text-accent">{activeTab}</p><h2 className="mt-2 text-xl font-semibold tracking-tight">Workspace scaffolded</h2><p className="mt-2 text-sm leading-6 text-muted">This surface is included in the Compass-parity information architecture. Its database operations will be added after the document workflow is validated.</p></div>
-            </div>
           )}
         </section>
 
@@ -543,7 +638,13 @@ export default function App() {
           onModeChange={setAgentMode}
         />
       </div>
-      {showConnectionDialog && <ConnectionDialog onClose={() => setShowConnectionDialog(false)} onSaved={(connection) => setConnections((current) => [...current, connection])} />}
+      {showConnectionDialog && <ConnectionDialog
+        onClose={() => setShowConnectionDialog(false)}
+        onSaved={async (connection) => {
+          setConnections((current) => [...current, connection])
+          await connect(connection)
+        }}
+      />}
     </main>
   )
 }
