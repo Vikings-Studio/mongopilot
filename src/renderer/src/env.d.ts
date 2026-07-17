@@ -5,5 +5,3 @@ declare global {
     mongoPilot: MongoPilotApi
   }
 }
-
-export {}

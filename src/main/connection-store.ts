@@ -69,7 +69,7 @@ export class ConnectionStore {
   private hostFromUri(uri: string): string {
     const withoutProtocol = uri.replace(/^mongodb(?:\+srv)?:\/\//, "")
     const authority = withoutProtocol.split("/")[0] ?? "MongoDB deployment"
-    return authority.includes("@") ? authority.split("@").at(-1)! : authority
+    return authority.includes("@") ? (authority.split("@").at(-1) ?? authority) : authority
   }
 
   private async read(): Promise<StoredConnection[]> {

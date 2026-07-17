@@ -20,13 +20,12 @@ import {
   Plus,
   Robot,
   ShieldCheck,
-  SidebarSimple,
   Sparkle,
   Star,
   Trash,
   X,
 } from "@phosphor-icons/react"
-import { FormEvent, useDeferredValue, useEffect, useRef, useState } from "react"
+import { type FormEvent, useDeferredValue, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type {
@@ -41,10 +40,14 @@ import type {
 } from "../../shared/types"
 import { getBsonDisplay, type BsonDisplayKind } from "./bson-format"
 
-type Message = { role: "assistant" | "user"; text: string }
+type Message = { id: string; role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
 
 const pageSizes = [10, 20, 50, 100] as const
+
+function createMessage(role: Message["role"], text: string): Message {
+  return { id: crypto.randomUUID(), role, text }
+}
 const panelLimits = {
   left: { min: 180, max: 420, initial: 240 },
   right: { min: 260, max: 560, initial: 320 },
@@ -78,7 +81,7 @@ function PanelResizeHandle({
 }) {
   const drag = useRef<{ pointerId: number; startX: number; startValue: number } | null>(null)
 
-  function finishDrag(event: React.PointerEvent<HTMLDivElement>): void {
+  function finishDrag(event: React.PointerEvent<HTMLHRElement>): void {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
     drag.current = null
     document.body.style.cursor = ""
@@ -86,8 +89,7 @@ function PanelResizeHandle({
   }
 
   return (
-    <div
-      role="separator"
+    <hr
       aria-label={label}
       aria-orientation="vertical"
       aria-valuemin={min}
@@ -112,10 +114,8 @@ function PanelResizeHandle({
         const boundaryDelta = event.key === "ArrowRight" ? 12 : -12
         onResize(clamp(value + boundaryDelta * direction, min, max))
       }}
-      className="group absolute inset-y-0 z-30 w-2 -translate-x-1/2 cursor-col-resize touch-none focus-visible:outline-none"
-    >
-      <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-[width,background-color] duration-150 group-hover:w-0.5 group-hover:bg-accent group-focus-visible:w-0.5 group-focus-visible:bg-accent" />
-    </div>
+      className="group absolute inset-y-0 z-30 m-0 w-2 -translate-x-1/2 cursor-col-resize touch-none border-0 after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-line after:transition-[width,background-color] after:duration-150 hover:after:w-0.5 hover:after:bg-accent focus-visible:outline-none focus-visible:after:w-0.5 focus-visible:after:bg-accent"
+    />
   )
 }
 
@@ -264,13 +264,13 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
   }
 
   return (
-    <div className="fixed inset-0 z-20 grid place-items-center bg-canvas/80 p-4 backdrop-blur-sm" role="presentation" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-20 grid place-items-center bg-canvas/80 p-4 backdrop-blur-sm">
+      <button type="button" aria-label="Close connection dialog" onClick={onClose} className="absolute inset-0 cursor-default focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none" />
       <section
         role="dialog"
         aria-modal="true"
         aria-labelledby="connection-title"
-        className="w-full max-w-xl overflow-hidden rounded-xl border border-line-strong bg-panel shadow-2xl shadow-canvas/60"
-        onMouseDown={(event) => event.stopPropagation()}
+        className="relative z-10 w-full max-w-xl overflow-hidden rounded-xl border border-line-strong bg-panel shadow-2xl shadow-canvas/60"
       >
         <header className="flex items-start justify-between border-b border-line px-6 py-5">
           <div>
@@ -358,8 +358,8 @@ function CopilotPanel({
   canWrite: boolean
   onModeChange: (mode: AccessMode) => void
 }) {
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", text: "I can draft filters, aggregation pipelines, schema checks, and report plans. Connect a deployment and I can use MongoDB tools within its agent access mode." },
+  const [messages, setMessages] = useState<Message[]>(() => [
+    createMessage("assistant", "I can draft filters, aggregation pipelines, schema checks, and report plans. Connect a deployment and I can use MongoDB tools within its agent access mode."),
   ])
   const [prompt, setPrompt] = useState("")
   const [sending, setSending] = useState(false)
@@ -370,6 +370,7 @@ function CopilotPanel({
   const [models, setModels] = useState<CopilotModel[]>([])
   const [selectedModel, setSelectedModel] = useState<CopilotModel | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
+  const modelSearchRef = useRef<HTMLInputElement>(null)
   const deferredModelQuery = useDeferredValue(modelQuery)
   const normalizedModelQuery = deferredModelQuery.trim().toLocaleLowerCase()
   const filteredModels = normalizedModelQuery
@@ -378,6 +379,11 @@ function CopilotPanel({
     : models
 
   useEffect(() => setLocalStatus(status), [status])
+  useEffect(() => {
+    if (!modelMenuOpen) return
+    const frame = window.requestAnimationFrame(() => modelSearchRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [modelMenuOpen])
   useEffect(() => {
     if (status.state !== "ready" || !window.mongoPilot || typeof window.mongoPilot.copilot.models !== "function") return
     let cancelled = false
@@ -390,8 +396,9 @@ function CopilotPanel({
         const preferred = stored
           ? result.models.find((model) => `${model.providerID}/${model.modelID}` === stored)
           : undefined
-        const defaultModel = result.defaultModel
-          ? result.models.find((model) => model.providerID === result.defaultModel!.providerID && model.modelID === result.defaultModel!.modelID)
+        const configuredDefault = result.defaultModel
+        const defaultModel = configuredDefault
+          ? result.models.find((model) => model.providerID === configuredDefault.providerID && model.modelID === configuredDefault.modelID)
           : undefined
         setSelectedModel(preferred ?? defaultModel ?? result.models.find((model) => model.supportsTools) ?? result.models[0] ?? null)
       })
@@ -410,7 +417,7 @@ function CopilotPanel({
     event.preventDefault()
     const text = prompt.trim()
     if (!text || sending) return
-    setMessages((current) => [...current, { role: "user", text }])
+    setMessages((current) => [...current, createMessage("user", text)])
     setPrompt("")
     setSending(true)
     try {
@@ -421,10 +428,10 @@ function CopilotPanel({
         context,
         model: selectedModel ? { providerID: selectedModel.providerID, modelID: selectedModel.modelID } : undefined,
       })
-      setMessages((current) => [...current, { role: "assistant", text: reply.text }])
+      setMessages((current) => [...current, createMessage("assistant", reply.text)])
       if (window.mongoPilot) setLocalStatus(await window.mongoPilot.copilot.status())
     } catch (reason) {
-      setMessages((current) => [...current, { role: "assistant", text: `Request failed: ${reason instanceof Error ? reason.message : "Unknown error."}` }])
+      setMessages((current) => [...current, createMessage("assistant", `Request failed: ${reason instanceof Error ? reason.message : "Unknown error."}`)])
       setLocalStatus(await window.mongoPilot.copilot.status())
     } finally {
       setSending(false)
@@ -446,8 +453,8 @@ function CopilotPanel({
         </div>
       </div>
       <div className="scrollbar-thin flex-1 space-y-4 overflow-y-auto p-3" aria-live="polite">
-        {messages.map((message, index) => (
-          <article key={`${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start pl-1 pr-4"}`}>
+        {messages.map((message) => (
+          <article key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start pl-1 pr-4"}`}>
             <div className={message.role === "user" ? "max-w-[88%] rounded-lg bg-raised px-3 py-2.5" : "min-w-0 max-w-full"}>
               <MarkdownMessage text={message.text} />
             </div>
@@ -483,8 +490,8 @@ function CopilotPanel({
             className="w-full resize-none bg-transparent px-3 pt-3 text-xs leading-5 placeholder:text-faint focus:outline-none"
           />
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <div
-              className="relative min-w-0"
+            <fieldset
+              className="relative m-0 min-w-0 border-0 p-0"
               onBlur={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget)) {
                   setModelMenuOpen(false)
@@ -492,6 +499,7 @@ function CopilotPanel({
                 }
               }}
             >
+              <legend className="sr-only">Model selection</legend>
               <button
                 type="button"
                 aria-haspopup="listbox"
@@ -520,8 +528,8 @@ function CopilotPanel({
                       <MagnifyingGlass size={13} className="shrink-0 text-faint" aria-hidden="true" />
                       <input
                         id="model-search"
+                        ref={modelSearchRef}
                         type="search"
-                        autoFocus
                         autoComplete="off"
                         value={modelQuery}
                         onChange={(event) => setModelQuery(event.target.value)}
@@ -569,13 +577,14 @@ function CopilotPanel({
                   </div>
                 </div>
               )}
-            </div>
-            <div
-              className="relative"
+            </fieldset>
+            <fieldset
+              className="relative m-0 border-0 p-0"
               onBlur={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget)) setModeMenuOpen(false)
               }}
             >
+              <legend className="sr-only">Agent access mode</legend>
               <button
                 type="button"
                 aria-haspopup="menu"
@@ -600,7 +609,7 @@ function CopilotPanel({
                   </button>
                 </div>
               )}
-            </div>
+            </fieldset>
             <button type="submit" disabled={!prompt.trim() || sending} aria-label="Send prompt" className="ml-auto grid size-9 shrink-0 place-items-center rounded-md bg-accent text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:bg-line-strong disabled:text-muted">
               <PaperPlaneTilt size={16} weight="fill" aria-hidden="true" />
             </button>
@@ -642,6 +651,8 @@ export default function App() {
   const [copilotStatus, setCopilotStatus] = useState<CopilotStatus>({ state: "starting" })
   const [agentMode, setAgentMode] = useState<AccessMode>("read-only")
   const [panelWidths, setPanelWidths] = useState(() => ({ left: readPanelWidth("left"), right: readPanelWidth("right") }))
+  const deleteCancelRef = useRef<HTMLButtonElement>(null)
+  const removeCancelRef = useRef<HTMLButtonElement>(null)
 
   const leftPanelMax = Math.max(
     panelLimits.left.min,
@@ -671,6 +682,18 @@ export default function App() {
     window.addEventListener("keydown", closeOnEscape)
     return () => window.removeEventListener("keydown", closeOnEscape)
   }, [pendingDeleteDocumentId, pendingRemoveConnection, mutatingDocumentId, removingConnectionId])
+
+  useEffect(() => {
+    if (!pendingDeleteDocumentId) return
+    const frame = window.requestAnimationFrame(() => deleteCancelRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [pendingDeleteDocumentId])
+
+  useEffect(() => {
+    if (!pendingRemoveConnection) return
+    const frame = window.requestAnimationFrame(() => removeCancelRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [pendingRemoveConnection])
 
   useEffect(() => {
     localStorage.setItem("mongo-pilot:panel-width:left", String(Math.round(panelWidths.left)))
@@ -935,7 +958,8 @@ export default function App() {
   function readCollectionPreferences(connectionId: string, database: string, collection: string): CollectionPreferences {
     try {
       const stored = JSON.parse(localStorage.getItem(preferenceKey(connectionId, database, collection)) ?? "null") as Partial<CollectionPreferences> | null
-      const storedPageSize = pageSizes.includes(stored?.pageSize as (typeof pageSizes)[number]) ? stored!.pageSize! : 20
+      const candidatePageSize = stored?.pageSize
+      const storedPageSize = typeof candidatePageSize === "number" && pageSizes.some((size) => size === candidatePageSize) ? candidatePageSize : 20
       return { sort: typeof stored?.sort === "string" ? stored.sort : "{}", pageSize: storedPageSize }
     } catch {
       return { sort: "{}", pageSize: 20 }
@@ -981,9 +1005,9 @@ export default function App() {
               </div>
             )}
             {[...connections].sort((a, b) => Number(b.favorite) - Number(a.favorite)).map((connection) => (
-              <div
+              <fieldset
                 key={connection.id}
-                className={`group relative ${connectionMenuId === connection.id ? "z-40" : ""}`}
+                className={`group relative m-0 min-w-0 border-0 p-0 ${connectionMenuId === connection.id ? "z-40" : ""}`}
                 onBlur={(event) => {
                   if (!event.currentTarget.contains(event.relatedTarget)) setConnectionMenuId(null)
                 }}
@@ -991,6 +1015,7 @@ export default function App() {
                   if (event.key === "Escape") setConnectionMenuId(null)
                 }}
               >
+                <legend className="sr-only">{connection.name} connection</legend>
                 <button type="button" onClick={() => void connect(connection)} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 py-1 pl-3 pr-11 text-left text-xs transition-[background-color,border-color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
                   <HardDrives size={17} className="shrink-0 text-muted" aria-hidden="true" />
                   <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium">{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connection.host}</span></span>
@@ -1015,7 +1040,7 @@ export default function App() {
                     </button>
                   </div>
                 )}
-              </div>
+              </fieldset>
             ))}
             {activeConnection && (
               <>
@@ -1108,7 +1133,7 @@ export default function App() {
               </div>
               <div className="scrollbar-thin flex-1 overflow-auto p-3">
                 {querying ? (
-                  <div className="space-y-2" aria-label="Loading documents">{[0, 1, 2, 3].map((item) => <div key={item} className="h-24 animate-pulse rounded-md border border-line bg-panel" />)}</div>
+                  <div role="status" className="space-y-2" aria-label="Loading documents">{[0, 1, 2, 3].map((item) => <div key={item} className="h-24 animate-pulse rounded-md border border-line bg-panel" />)}</div>
                 ) : documents.length ? (
                   <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-panel">
                     {documents.map((row, index) => (
@@ -1198,34 +1223,26 @@ export default function App() {
         }}
       />}
       {pendingDeleteDocumentId && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && mutatingDocumentId === null) setPendingDeleteDocumentId(null)
-          }}
-        >
-          <section role="alertdialog" aria-modal="true" aria-labelledby="delete-document-title" aria-describedby="delete-document-description" className="w-full max-w-md rounded-lg border border-line-strong bg-panel p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm">
+          <button type="button" aria-label="Cancel document deletion" disabled={mutatingDocumentId !== null} onClick={() => setPendingDeleteDocumentId(null)} className="absolute inset-0 cursor-default focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait" />
+          <section role="alertdialog" aria-modal="true" aria-labelledby="delete-document-title" aria-describedby="delete-document-description" className="relative z-10 w-full max-w-md rounded-lg border border-line-strong bg-panel p-5 shadow-2xl">
             <h2 id="delete-document-title" className="text-base font-semibold">Delete document?</h2>
             <p id="delete-document-description" className="mt-2 text-xs leading-5 text-muted">This permanently deletes the document from <span className="font-mono text-ink">{selectedDatabase}.{selectedCollection}</span>. This action cannot be undone.</p>
             <div className="mt-5 flex justify-end gap-2">
-              <button type="button" autoFocus disabled={mutatingDocumentId !== null} onClick={() => setPendingDeleteDocumentId(null)} className="h-10 rounded-md border border-line px-4 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-50">Cancel</button>
+              <button ref={deleteCancelRef} type="button" disabled={mutatingDocumentId !== null} onClick={() => setPendingDeleteDocumentId(null)} className="h-10 rounded-md border border-line px-4 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-50">Cancel</button>
               <button type="button" disabled={mutatingDocumentId !== null} onClick={() => void deleteDocument(pendingDeleteDocumentId)} className="inline-flex h-10 items-center gap-2 rounded-md bg-danger px-4 text-xs font-semibold text-canvas hover:brightness-110 focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><Trash size={14} aria-hidden="true" />{mutatingDocumentId !== null ? "Deleting..." : "Delete document"}</button>
             </div>
           </section>
         </div>
       )}
       {pendingRemoveConnection && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && removingConnectionId === null) setPendingRemoveConnection(null)
-          }}
-        >
-          <section role="alertdialog" aria-modal="true" aria-labelledby="remove-connection-title" aria-describedby="remove-connection-description" className="w-full max-w-md rounded-lg border border-line-strong bg-panel p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm">
+          <button type="button" aria-label="Cancel connection removal" disabled={removingConnectionId !== null} onClick={() => setPendingRemoveConnection(null)} className="absolute inset-0 cursor-default focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait" />
+          <section role="alertdialog" aria-modal="true" aria-labelledby="remove-connection-title" aria-describedby="remove-connection-description" className="relative z-10 w-full max-w-md rounded-lg border border-line-strong bg-panel p-5 shadow-2xl">
             <h2 id="remove-connection-title" className="text-base font-semibold">Remove saved connection?</h2>
             <p id="remove-connection-description" className="mt-2 text-xs leading-5 text-muted">This removes <span className="font-medium text-ink">{pendingRemoveConnection.name}</span> and its encrypted connection string from Mongo Pilot. It does not delete the MongoDB deployment or its data.</p>
             <div className="mt-5 flex justify-end gap-2">
-              <button type="button" autoFocus disabled={removingConnectionId !== null} onClick={() => setPendingRemoveConnection(null)} className="h-10 rounded-md border border-line px-4 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-50">Cancel</button>
+              <button ref={removeCancelRef} type="button" disabled={removingConnectionId !== null} onClick={() => setPendingRemoveConnection(null)} className="h-10 rounded-md border border-line px-4 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-50">Cancel</button>
               <button type="button" disabled={removingConnectionId !== null} onClick={() => void removeConnection(pendingRemoveConnection)} className="inline-flex h-10 items-center gap-2 rounded-md bg-danger px-4 text-xs font-semibold text-canvas hover:brightness-110 focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><Trash size={14} aria-hidden="true" />{removingConnectionId !== null ? "Removing..." : "Remove connection"}</button>
             </div>
           </section>

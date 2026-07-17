@@ -1,8 +1,7 @@
 import assert from "node:assert/strict"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import type { MongoService } from "../src/main/mongo-service"
-import { MongoMcpServer } from "../src/main/mongo-mcp-server"
+import { MongoMcpServer, type MongoAgentService } from "../src/main/mongo-mcp-server"
 
 let activeMode: "read-only" | "read-write" = "read-only"
 const fakeMongo = {
@@ -15,7 +14,7 @@ const fakeMongo = {
   agentInsertOne: async () => ({ acknowledged: true }),
   agentUpdateOne: async () => ({ acknowledged: true }),
   agentDeleteOne: async () => ({ acknowledged: true }),
-} as unknown as MongoService
+} satisfies MongoAgentService
 
 const server = new MongoMcpServer(fakeMongo)
 const endpoint = await server.start()

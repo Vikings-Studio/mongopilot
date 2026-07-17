@@ -1,7 +1,7 @@
 import { EJSON } from "bson"
 import { MongoClient, type Document, type Filter, type Sort, type UpdateFilter } from "mongodb"
 import type { AccessMode, CollectionInfo, DatabaseInfo, DocumentTargetInput, FindInput, FindResult, ReplaceDocumentInput, SavedConnection } from "../shared/types"
-import { ConnectionStore } from "./connection-store"
+import type { ConnectionStore } from "./connection-store"
 
 interface ActiveConnection {
   client: MongoClient

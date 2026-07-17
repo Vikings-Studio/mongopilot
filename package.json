@@ -7,7 +7,8 @@
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run typecheck && npm run lint && electron-vite build",
+    "lint": "biome lint . --error-on-warnings",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:bson": "tsx scripts/bson-format-smoke.ts",
     "test:mcp": "tsx scripts/mcp-smoke.ts",
@@ -33,6 +34,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
     "@tailwindcss/vite": "4.3.3",
     "@types/express": "^5.0.6",
     "@types/node": "^24.0.0",

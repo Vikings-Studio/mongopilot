@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express from "express"
 import { z } from "zod"
 import type { AccessMode } from "../shared/types"
-import { MongoService } from "./mongo-service"
+import type { MongoService } from "./mongo-service"
 
 interface AgentGrant {
   connectionId: string
@@ -15,13 +15,25 @@ interface AgentGrant {
 
 const documentSchema = z.record(z.unknown())
 
+export type MongoAgentService = Pick<MongoService,
+  | "getAccessMode"
+  | "agentListDatabases"
+  | "agentListCollections"
+  | "agentFind"
+  | "agentAggregate"
+  | "agentCount"
+  | "agentInsertOne"
+  | "agentUpdateOne"
+  | "agentDeleteOne"
+>
+
 export class MongoMcpServer {
   private readonly token = randomBytes(32).toString("base64url")
   private listener?: Server
   private grant?: AgentGrant
   private url?: string
 
-  constructor(private readonly mongo: MongoService) {}
+  constructor(private readonly mongo: MongoAgentService) {}
 
   async start(): Promise<{ url: string; token: string }> {
     if (this.url) return { url: this.url, token: this.token }
@@ -67,7 +79,8 @@ export class MongoMcpServer {
 
   async stop(): Promise<void> {
     this.clearGrant()
-    if (this.listener) await new Promise<void>((resolve, reject) => this.listener!.close((error) => error ? reject(error) : resolve()))
+    const listener = this.listener
+    if (listener) await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()))
     this.listener = undefined
     this.url = undefined
   }

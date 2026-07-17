@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { app } from "electron"
 import { createOpencodeClient, type Config, type OpencodeClient } from "@opencode-ai/sdk/v2"
 import type { CopilotModelsResult, CopilotPromptInput, CopilotReply, CopilotStatus } from "../shared/types"
-import { MongoMcpServer } from "./mongo-mcp-server"
+import type { MongoMcpServer } from "./mongo-mcp-server"
 
 const mongoReadTools = ["mongo_list_databases", "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_count"] as const
 const mongoWriteTools = ["mongo_insert_one", "mongo_update_one", "mongo_delete_one"] as const
@@ -25,7 +25,7 @@ export class OpencodeService {
 
   async start(): Promise<CopilotStatus> {
     if (this.client) return this.currentStatus
-    if (this.startPromise) return this.startPromise
+    if (this.startPromise !== undefined) return this.startPromise
     this.startPromise = this.startServer()
     try {
       return await this.startPromise
@@ -99,9 +99,11 @@ export class OpencodeService {
       const status = await this.start()
       if (status.state !== "ready") throw new Error(status.state === "error" ? status.message : "OpenCode is not ready.")
     }
+    const client = this.client
+    if (!client) throw new Error("OpenCode client is unavailable after startup.")
     const [providersResult, configResult] = await Promise.all([
-      this.client!.config.providers(),
-      this.client!.config.get(),
+      client.config.providers(),
+      client.config.get(),
     ])
     const providerData = providersResult.data
     if (!providerData) throw new Error("OpenCode returned no model providers.")
@@ -121,15 +123,16 @@ export class OpencodeService {
 
     const configuredModel = configResult.data?.model
     const separator = configuredModel?.indexOf("/") ?? -1
-    const configuredDefault = separator > 0
-      ? { providerID: configuredModel!.slice(0, separator), modelID: configuredModel!.slice(separator + 1) }
+    const configuredDefault = configuredModel && separator > 0
+      ? { providerID: configuredModel.slice(0, separator), modelID: configuredModel.slice(separator + 1) }
       : undefined
     const fallbackProvider = providerData.providers.find((provider) => {
       const modelID = providerData.default[provider.id]
       return Boolean(modelID && provider.models[modelID])
     })
-    const defaultModel = configuredDefault ?? (fallbackProvider
-      ? { providerID: fallbackProvider.id, modelID: providerData.default[fallbackProvider.id] }
+    const fallbackModelID = fallbackProvider ? providerData.default[fallbackProvider.id] : undefined
+    const defaultModel = configuredDefault ?? (fallbackProvider && fallbackModelID
+      ? { providerID: fallbackProvider.id, modelID: fallbackModelID }
       : undefined)
     return { models, defaultModel }
   }
@@ -140,14 +143,17 @@ export class OpencodeService {
       const status = await this.start()
       if (status.state !== "ready") throw new Error(status.state === "error" ? status.message : "OpenCode is not ready.")
     }
-    const client = this.client!
+    const client = this.client
+    if (!client) throw new Error("OpenCode client is unavailable after startup.")
     if (!this.sessionId) {
       const created = await client.session.create({ title: "Mongo Pilot copilot" })
       if (!created.data) throw new Error("OpenCode did not create a session.")
       this.sessionId = created.data.id
     }
     const context = input.context
-    const hasMongoGrant = Boolean(context?.connectionId && context.accessMode)
+    const connectionId = context?.connectionId
+    const mode = context?.accessMode
+    const hasMongoGrant = Boolean(connectionId && mode)
     const savedConnections = context?.availableConnections ?? []
     const savedConnectionContext = savedConnections.length
       ? `Saved connections available: ${savedConnections.map((connection) => `${connection.name} (${connection.host}, maximum access: ${connection.accessMode}${connection.favorite ? ", favorite" : ""})`).join("; ")}.`
@@ -164,13 +170,12 @@ export class OpencodeService {
       context?.database ? `Active database: ${context.database}.` : "",
       context?.collection ? `Active collection: ${context.collection}.` : "",
     ].filter(Boolean).join("\n")
-    const mode = context?.accessMode
     const tools = Object.fromEntries([
       ...mongoReadTools.map((tool) => [tool, hasMongoGrant] as const),
       ...mongoWriteTools.map((tool) => [tool, Boolean(hasMongoGrant && mode !== "read-only")] as const),
     ])
     this.promptInFlight = true
-    if (hasMongoGrant) this.mongoMcp.setGrant({ connectionId: context!.connectionId!, accessMode: mode! })
+    if (connectionId && mode) this.mongoMcp.setGrant({ connectionId, accessMode: mode })
     try {
       const result = await client.session.prompt({
         sessionID: this.sessionId,
@@ -222,9 +227,11 @@ export class OpencodeService {
         output += chunk.toString()
         const match = output.match(/opencode server listening on (https?:\/\/[^\s]+)/)
         if (!match || settled) return
+        const url = match[1]
+        if (!url) return
         settled = true
         clearTimeout(timeout)
-        resolve(match[1])
+        resolve(url)
       }
       processHandle.stdout?.on("data", inspect)
       processHandle.stderr?.on("data", inspect)
