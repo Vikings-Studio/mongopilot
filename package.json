@@ -12,7 +12,10 @@
     "test:bson": "tsx scripts/bson-format-smoke.ts",
     "test:mcp": "tsx scripts/mcp-smoke.ts",
     "preview": "electron-vite preview",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg --x64 --publish never",
+    "dist:windows": "npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@fontsource-variable/geist-mono": "5.2.8",
@@ -56,20 +59,32 @@
     "asarUnpack": [
       "node_modules/opencode-ai/**/*"
     ],
-    "extraResources": [
-      {
-        "from": "node_modules/opencode-ai/bin/opencode.exe",
-        "to": "opencode/opencode"
-      }
-    ],
     "mac": {
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "target": "dmg",
+      "extraResources": [
+        {
+          "from": "node_modules/opencode-ai/bin/opencode.exe",
+          "to": "opencode/opencode"
+        }
+      ]
     },
     "win": {
+      "target": "nsis",
       "extraResources": [
         {
           "from": "node_modules/opencode-ai/bin/opencode.exe",
           "to": "opencode/opencode.exe"
+        }
+      ]
+    },
+    "linux": {
+      "category": "Development",
+      "target": "AppImage",
+      "extraResources": [
+        {
+          "from": "node_modules/opencode-ai/bin/opencode.exe",
+          "to": "opencode/opencode"
         }
       ]
     }

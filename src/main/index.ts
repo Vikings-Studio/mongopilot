@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import { app, BrowserWindow, ipcMain, shell } from "electron"
+import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron"
 import icon from "../../resources/icon.png?asset"
 import type { DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
@@ -43,7 +43,13 @@ function createWindow(): void {
 function registerIpc(store: ConnectionStore): void {
   ipcMain.handle("connections:list", () => store.list())
   ipcMain.handle("connections:save", (_event, input: SaveConnectionInput) => store.save(input))
-  ipcMain.handle("connections:remove", (_event, id: string) => store.remove(id))
+  ipcMain.handle("connections:remove", async (_event, id: string) => {
+    await mongo.disconnect(id)
+    await store.remove(id)
+  })
+  ipcMain.handle("connections:copyUri", async (_event, id: string) => {
+    clipboard.writeText(await store.getUri(id))
+  })
   ipcMain.handle("connections:connect", (_event, id: string) => mongo.connect(id))
   ipcMain.handle("connections:disconnect", (_event, id: string) => mongo.disconnect(id))
   ipcMain.handle("database:listCollections", (_event, id: string, database: string) => mongo.listCollections(id, database))

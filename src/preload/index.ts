@@ -6,6 +6,7 @@ const api: MongoPilotApi = {
     list: () => ipcRenderer.invoke("connections:list"),
     save: (input: SaveConnectionInput) => ipcRenderer.invoke("connections:save", input),
     remove: (id: string) => ipcRenderer.invoke("connections:remove", id),
+    copyUri: (id: string) => ipcRenderer.invoke("connections:copyUri", id),
     connect: (id: string) => ipcRenderer.invoke("connections:connect", id),
     disconnect: (id: string) => ipcRenderer.invoke("connections:disconnect", id),
   },

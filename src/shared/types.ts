@@ -121,6 +121,7 @@ export interface MongoPilotApi {
     list(): Promise<SavedConnection[]>
     save(input: SaveConnectionInput): Promise<SavedConnection>
     remove(id: string): Promise<void>
+    copyUri(id: string): Promise<void>
     connect(id: string): Promise<ConnectionResult>
     disconnect(id: string): Promise<void>
   }

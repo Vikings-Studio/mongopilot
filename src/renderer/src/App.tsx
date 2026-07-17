@@ -1,11 +1,9 @@
 import {
   ArrowClockwise,
-  ArrowsOutSimple,
   BracketsCurly,
   CaretDown,
   CaretLeft,
   CaretRight,
-  ChartLineUp,
   Check,
   CirclesThreePlus,
   Code,
@@ -25,11 +23,10 @@ import {
   SidebarSimple,
   Sparkle,
   Star,
-  Table,
   Trash,
   X,
 } from "@phosphor-icons/react"
-import { FormEvent, useDeferredValue, useEffect, useState } from "react"
+import { FormEvent, useDeferredValue, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type {
@@ -48,6 +45,79 @@ type Message = { role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
 
 const pageSizes = [10, 20, 50, 100] as const
+const panelLimits = {
+  left: { min: 180, max: 420, initial: 240 },
+  right: { min: 260, max: 560, initial: 320 },
+  centerMin: 480,
+} as const
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+function readPanelWidth(key: "left" | "right"): number {
+  const limits = panelLimits[key]
+  const stored = Number(localStorage.getItem(`mongo-pilot:panel-width:${key}`))
+  return Number.isFinite(stored) && stored > 0 ? clamp(stored, limits.min, limits.max) : limits.initial
+}
+
+function PanelResizeHandle({
+  label,
+  value,
+  min,
+  max,
+  direction,
+  onResize,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  direction: 1 | -1
+  onResize: (value: number) => void
+}) {
+  const drag = useRef<{ pointerId: number; startX: number; startValue: number } | null>(null)
+
+  function finishDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    drag.current = null
+    document.body.style.cursor = ""
+    document.body.style.userSelect = ""
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={Math.round(value)}
+      tabIndex={0}
+      onPointerDown={(event) => {
+        drag.current = { pointerId: event.pointerId, startX: event.clientX, startValue: value }
+        event.currentTarget.setPointerCapture(event.pointerId)
+        document.body.style.cursor = "col-resize"
+        document.body.style.userSelect = "none"
+      }}
+      onPointerMove={(event) => {
+        if (!drag.current || drag.current.pointerId !== event.pointerId) return
+        onResize(clamp(drag.current.startValue + (event.clientX - drag.current.startX) * direction, min, max))
+      }}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
+        event.preventDefault()
+        const boundaryDelta = event.key === "ArrowRight" ? 12 : -12
+        onResize(clamp(value + boundaryDelta * direction, min, max))
+      }}
+      className="group absolute inset-y-0 z-30 w-2 -translate-x-1/2 cursor-col-resize touch-none focus-visible:outline-none"
+    >
+      <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-[width,background-color] duration-150 group-hover:w-0.5 group-hover:bg-accent group-focus-visible:w-0.5 group-focus-visible:bg-accent" />
+    </div>
+  )
+}
 
 function MarkdownMessage({ text }: { text: string }) {
   return (
@@ -64,7 +134,7 @@ function MarkdownMessage({ text }: { text: string }) {
   )
 }
 
-function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) {
+function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -565,9 +635,23 @@ export default function App() {
   const [copiedDocumentId, setCopiedDocumentId] = useState<string | null>(null)
   const [mutatingDocumentId, setMutatingDocumentId] = useState<string | null>(null)
   const [pendingDeleteDocumentId, setPendingDeleteDocumentId] = useState<string | null>(null)
+  const [connectionMenuId, setConnectionMenuId] = useState<string | null>(null)
+  const [pendingRemoveConnection, setPendingRemoveConnection] = useState<SavedConnection | null>(null)
+  const [removingConnectionId, setRemovingConnectionId] = useState<string | null>(null)
+  const [connectionNotice, setConnectionNotice] = useState<{ message: string; error: boolean } | null>(null)
   const [copilotStatus, setCopilotStatus] = useState<CopilotStatus>({ state: "starting" })
   const [agentMode, setAgentMode] = useState<AccessMode>("read-only")
-  const [activeTab, setActiveTab] = useState("Documents")
+  const [panelWidths, setPanelWidths] = useState(() => ({ left: readPanelWidth("left"), right: readPanelWidth("right") }))
+
+  const leftPanelMax = Math.max(
+    panelLimits.left.min,
+    Math.min(panelLimits.left.max, window.innerWidth - panelWidths.right - panelLimits.centerMin),
+  )
+  const rightPanelMax = Math.max(
+    panelLimits.right.min,
+    Math.min(panelLimits.right.max, window.innerWidth - panelWidths.left - panelLimits.centerMin),
+  )
+  const workspaceColumns = `${panelWidths.left}px minmax(${panelLimits.centerMin}px, 1fr) ${panelWidths.right}px`
 
   useEffect(() => {
     if (!window.mongoPilot) return
@@ -578,15 +662,96 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!pendingDeleteDocumentId || mutatingDocumentId) return
+    if ((!pendingDeleteDocumentId && !pendingRemoveConnection) || mutatingDocumentId || removingConnectionId) return
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPendingDeleteDocumentId(null)
+      if (event.key !== "Escape") return
+      setPendingDeleteDocumentId(null)
+      setPendingRemoveConnection(null)
     }
     window.addEventListener("keydown", closeOnEscape)
     return () => window.removeEventListener("keydown", closeOnEscape)
-  }, [pendingDeleteDocumentId, mutatingDocumentId])
+  }, [pendingDeleteDocumentId, pendingRemoveConnection, mutatingDocumentId, removingConnectionId])
+
+  useEffect(() => {
+    localStorage.setItem("mongo-pilot:panel-width:left", String(Math.round(panelWidths.left)))
+    localStorage.setItem("mongo-pilot:panel-width:right", String(Math.round(panelWidths.right)))
+  }, [panelWidths])
+
+  useEffect(() => {
+    const fitPanelsToWindow = () => {
+      setPanelWidths((current) => {
+        const available = Math.max(
+          panelLimits.left.min + panelLimits.right.min,
+          window.innerWidth - panelLimits.centerMin,
+        )
+        let left = current.left
+        let right = current.right
+        let overflow = left + right - available
+        if (overflow <= 0) return current
+        const rightReduction = Math.min(overflow, right - panelLimits.right.min)
+        right -= rightReduction
+        overflow -= rightReduction
+        left -= Math.min(overflow, left - panelLimits.left.min)
+        return { left, right }
+      })
+    }
+    window.addEventListener("resize", fitPanelsToWindow)
+    fitPanelsToWindow()
+    return () => window.removeEventListener("resize", fitPanelsToWindow)
+  }, [])
+
+  function showConnectionNotice(message: string, error = false): void {
+    setConnectionNotice({ message, error })
+    window.setTimeout(() => {
+      setConnectionNotice((current) => current?.message === message ? null : current)
+    }, 2_500)
+  }
+
+  function clearWorkspace(): void {
+    setActiveConnection(null)
+    setDatabases([])
+    setCollections([])
+    setSelectedDatabase("")
+    setSelectedCollection("")
+    setDocuments([])
+    setDuration(null)
+    setQueryRan(false)
+    setTotal(0)
+    setPage(1)
+    setEditingDocumentId(null)
+    setPendingDeleteDocumentId(null)
+    setAgentMode("read-only")
+  }
+
+  async function copyConnectionString(connection: SavedConnection): Promise<void> {
+    setConnectionMenuId(null)
+    try {
+      if (!window.mongoPilot) throw new Error("Connection actions are available in the Electron app.")
+      await window.mongoPilot.connections.copyUri(connection.id)
+      showConnectionNotice(`Copied ${connection.name} connection string.`)
+    } catch (reason) {
+      showConnectionNotice(reason instanceof Error ? reason.message : "Could not copy the connection string.", true)
+    }
+  }
+
+  async function removeConnection(connection: SavedConnection): Promise<void> {
+    setRemovingConnectionId(connection.id)
+    try {
+      if (!window.mongoPilot) throw new Error("Connection actions are available in the Electron app.")
+      await window.mongoPilot.connections.remove(connection.id)
+      setConnections((current) => current.filter((item) => item.id !== connection.id))
+      if (activeConnection?.id === connection.id) clearWorkspace()
+      setPendingRemoveConnection(null)
+      showConnectionNotice(`Removed ${connection.name}.`)
+    } catch (reason) {
+      showConnectionNotice(reason instanceof Error ? reason.message : "Could not remove the connection.", true)
+    } finally {
+      setRemovingConnectionId(null)
+    }
+  }
 
   async function connect(connection: SavedConnection) {
+    setConnectionMenuId(null)
     setError("")
     try {
       if (!window.mongoPilot) throw new Error("Connections are available in the Electron app.")
@@ -614,17 +779,22 @@ export default function App() {
   async function selectDatabase(connectionId: string, name: string) {
     setSelectedDatabase(name)
     if (!window.mongoPilot) return
-    const next = await window.mongoPilot.database.listCollections(connectionId, name)
-    setCollections(next)
-    const firstCollection = next[0]?.name
-    if (firstCollection) await selectCollection(connectionId, name, firstCollection)
-    else {
-      setSelectedCollection("")
-      setDocuments([])
-      setDuration(null)
-      setQueryRan(false)
-      setTotal(0)
-      setPage(1)
+    setError("")
+    try {
+      const next = await window.mongoPilot.database.listCollections(connectionId, name)
+      setCollections(next)
+      const firstCollection = next[0]?.name
+      if (firstCollection) await selectCollection(connectionId, name, firstCollection)
+      else {
+        setSelectedCollection("")
+        setDocuments([])
+        setDuration(null)
+        setQueryRan(false)
+        setTotal(0)
+        setPage(1)
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load collections.")
     }
   }
 
@@ -684,9 +854,13 @@ export default function App() {
   }
 
   async function copyDocument(id: string, document: unknown): Promise<void> {
-    await navigator.clipboard.writeText(JSON.stringify(document, null, 2))
-    setCopiedDocumentId(id)
-    window.setTimeout(() => setCopiedDocumentId((current) => current === id ? null : current), 1_500)
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(document, null, 2))
+      setCopiedDocumentId(id)
+      window.setTimeout(() => setCopiedDocumentId((current) => current === id ? null : current), 1_500)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not copy this document.")
+    }
   }
 
   function editDocument(id: string, document: unknown): void {
@@ -784,7 +958,7 @@ export default function App() {
 
   return (
     <main className="grid h-[100dvh] min-h-[720px] min-w-[1100px] grid-rows-[40px_minmax(0,1fr)] overflow-hidden bg-canvas text-ink">
-      <header className="title-drag grid grid-cols-[240px_minmax(0,1fr)_320px] items-center border-b border-line bg-shell max-lg:grid-cols-[240px_minmax(0,1fr)] max-md:grid-cols-[72px_minmax(0,1fr)]">
+      <header className="title-drag grid items-center border-b border-line bg-shell" style={{ gridTemplateColumns: workspaceColumns }}>
         <div className="truncate pl-20 text-xs font-semibold tracking-tight max-md:pl-3">Mongo Pilot <span className="ml-1 font-mono text-[9px] font-normal uppercase tracking-widest text-faint max-md:hidden">alpha</span></div>
         <div className="h-full border-x border-line max-lg:border-r-0" />
         <div className="flex items-center justify-between px-3 max-lg:hidden">
@@ -793,7 +967,7 @@ export default function App() {
         </div>
       </header>
 
-      <div className="grid min-h-0 grid-cols-[240px_minmax(480px,1fr)_320px] max-lg:grid-cols-[240px_minmax(0,1fr)] max-md:grid-cols-[72px_minmax(0,1fr)]">
+      <div className="relative grid min-h-0" style={{ gridTemplateColumns: workspaceColumns }}>
         <aside className="flex min-h-0 flex-col border-r border-line bg-shell">
           <div className="flex h-12 items-center justify-between border-b border-line px-3 max-md:justify-center">
             <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted max-md:hidden">Connections</h2>
@@ -806,11 +980,42 @@ export default function App() {
                 <p className="text-[11px] text-muted">No saved connections</p>
               </div>
             )}
-            {connections.sort((a, b) => Number(b.favorite) - Number(a.favorite)).map((connection) => (
-              <button key={connection.id} type="button" onClick={() => void connect(connection)} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 px-3 text-left text-xs transition-[background-color,border-color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
-                <HardDrives size={17} className="shrink-0 text-muted" aria-hidden="true" />
-                <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium">{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connection.host}</span></span>
-              </button>
+            {[...connections].sort((a, b) => Number(b.favorite) - Number(a.favorite)).map((connection) => (
+              <div
+                key={connection.id}
+                className={`group relative ${connectionMenuId === connection.id ? "z-40" : ""}`}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) setConnectionMenuId(null)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setConnectionMenuId(null)
+                }}
+              >
+                <button type="button" onClick={() => void connect(connection)} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 py-1 pl-3 pr-11 text-left text-xs transition-[background-color,border-color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
+                  <HardDrives size={17} className="shrink-0 text-muted" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium">{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connection.host}</span></span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Actions for ${connection.name}`}
+                  aria-haspopup="menu"
+                  aria-expanded={connectionMenuId === connection.id}
+                  onClick={() => setConnectionMenuId((current) => current === connection.id ? null : connection.id)}
+                  className={`absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded text-muted transition-[background-color,color,opacity] duration-150 hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${connectionMenuId === connection.id ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}
+                >
+                  <DotsThree size={17} weight="bold" aria-hidden="true" />
+                </button>
+                {connectionMenuId === connection.id && (
+                  <div role="menu" aria-label={`${connection.name} actions`} className="absolute right-2 top-10 z-50 w-52 rounded-md border border-line-strong bg-raised p-1 shadow-xl shadow-canvas/60">
+                    <button type="button" role="menuitem" onClick={() => void copyConnectionString(connection)} className="flex min-h-10 w-full items-center gap-2 rounded px-2 text-left text-[11px] text-muted hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
+                      <Copy size={14} aria-hidden="true" />Copy connection string
+                    </button>
+                    <button type="button" role="menuitem" onClick={() => { setConnectionMenuId(null); setPendingRemoveConnection(connection) }} className="flex min-h-10 w-full items-center gap-2 rounded px-2 text-left text-[11px] text-danger hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none">
+                      <Trash size={14} aria-hidden="true" />Remove connection
+                    </button>
+                  </div>
+                )}
+              </div>
             ))}
             {activeConnection && (
               <>
@@ -846,7 +1051,7 @@ export default function App() {
             ) : (
               <span className="text-xs font-medium">MongoDB workspace</span>
             )}
-            {activeConnection && <div className="ml-auto flex items-center gap-1"><AccessBadge mode={context.accessMode} /><IconButton label="More collection options"><DotsThree size={18} weight="bold" aria-hidden="true" /></IconButton></div>}
+            {activeConnection && <div className="ml-auto"><AccessBadge mode={context.accessMode} /></div>}
           </header>
           {!activeConnection ? (
             <div className="grid flex-1 place-items-center p-8">
@@ -859,12 +1064,6 @@ export default function App() {
             </div>
           ) : (
             <>
-              <nav aria-label="Collection views" className="scrollbar-thin flex h-11 shrink-0 items-end gap-5 overflow-x-auto border-b border-line px-4">
-                {["Documents", "Aggregations", "Schema", "Indexes", "Reports"].map((tab) => (
-                  <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`h-11 shrink-0 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${activeTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
-                ))}
-              </nav>
-              {activeTab === "Documents" ? <>
               <div className="border-b border-line bg-shell p-3">
                 <div className="grid grid-cols-[minmax(0,2fr)_minmax(140px,1fr)_auto] items-start gap-2">
                   <div className="min-w-0 flex-1 rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
@@ -882,10 +1081,9 @@ export default function App() {
                 {error && <div role="alert" className="mt-2 flex items-center justify-between rounded border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"><span>{error}</span><button type="button" onClick={() => setError("")} className="rounded p-1 focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none" aria-label="Dismiss error"><X size={14} /></button></div>}
               </div>
               <div className="flex h-10 items-center border-b border-line px-3">
-                <div className="flex items-center gap-1"><IconButton label="Refresh documents" onClick={() => void runQuery()}><ArrowClockwise size={15} aria-hidden="true" /></IconButton><IconButton label="Expand document view"><ArrowsOutSimple size={15} aria-hidden="true" /></IconButton></div>
+                {selectedCollection && <IconButton label="Refresh documents" onClick={() => void runQuery()}><ArrowClockwise size={15} aria-hidden="true" /></IconButton>}
                 <div className="mx-2 h-4 border-l border-line" />
-                <button type="button" className="flex h-8 items-center gap-1.5 rounded bg-raised px-2.5 text-xs text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"><BracketsCurly size={14} aria-hidden="true" />JSON</button>
-                <button type="button" className="flex h-8 items-center gap-1.5 rounded px-2.5 text-xs text-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"><Table size={14} aria-hidden="true" />Table</button>
+                <span className="flex h-8 items-center gap-1.5 rounded bg-raised px-2.5 text-xs text-ink"><BracketsCurly size={14} aria-hidden="true" />JSON</span>
                 <div className="ml-auto flex items-center gap-2">
                   <label htmlFor="page-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Rows</label>
                   <select
@@ -961,11 +1159,6 @@ export default function App() {
                   </div>
                 )}
               </div>
-              </> : (
-                <div className="grid flex-1 place-items-center p-8">
-                  <div className="max-w-md text-center"><ChartLineUp size={30} className="mx-auto mb-4 text-accent" aria-hidden="true" /><p className="font-mono text-xs uppercase tracking-widest text-accent">{activeTab}</p><h2 className="mt-2 text-xl font-semibold tracking-tight">No data loaded</h2><p className="mt-2 text-xs leading-5 text-muted">This view will use the active MongoDB connection.</p></div>
-                </div>
-              )}
             </>
           )}
         </section>
@@ -976,6 +1169,26 @@ export default function App() {
           canWrite={activeConnection?.accessMode === "read-write"}
           onModeChange={setAgentMode}
         />
+        <div style={{ left: panelWidths.left }} className="absolute inset-y-0 z-30">
+          <PanelResizeHandle
+            label="Resize connections panel"
+            value={panelWidths.left}
+            min={panelLimits.left.min}
+            max={leftPanelMax}
+            direction={1}
+            onResize={(value) => setPanelWidths((current) => ({ ...current, left: value }))}
+          />
+        </div>
+        <div style={{ left: `calc(100% - ${panelWidths.right}px)` }} className="absolute inset-y-0 z-30">
+          <PanelResizeHandle
+            label="Resize copilot panel"
+            value={panelWidths.right}
+            min={panelLimits.right.min}
+            max={rightPanelMax}
+            direction={-1}
+            onResize={(value) => setPanelWidths((current) => ({ ...current, right: value }))}
+          />
+        </div>
       </div>
       {showConnectionDialog && <ConnectionDialog
         onClose={() => setShowConnectionDialog(false)}
@@ -999,6 +1212,28 @@ export default function App() {
               <button type="button" disabled={mutatingDocumentId !== null} onClick={() => void deleteDocument(pendingDeleteDocumentId)} className="inline-flex h-10 items-center gap-2 rounded-md bg-danger px-4 text-xs font-semibold text-canvas hover:brightness-110 focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><Trash size={14} aria-hidden="true" />{mutatingDocumentId !== null ? "Deleting..." : "Delete document"}</button>
             </div>
           </section>
+        </div>
+      )}
+      {pendingRemoveConnection && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && removingConnectionId === null) setPendingRemoveConnection(null)
+          }}
+        >
+          <section role="alertdialog" aria-modal="true" aria-labelledby="remove-connection-title" aria-describedby="remove-connection-description" className="w-full max-w-md rounded-lg border border-line-strong bg-panel p-5 shadow-2xl">
+            <h2 id="remove-connection-title" className="text-base font-semibold">Remove saved connection?</h2>
+            <p id="remove-connection-description" className="mt-2 text-xs leading-5 text-muted">This removes <span className="font-medium text-ink">{pendingRemoveConnection.name}</span> and its encrypted connection string from Mongo Pilot. It does not delete the MongoDB deployment or its data.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" autoFocus disabled={removingConnectionId !== null} onClick={() => setPendingRemoveConnection(null)} className="h-10 rounded-md border border-line px-4 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={removingConnectionId !== null} onClick={() => void removeConnection(pendingRemoveConnection)} className="inline-flex h-10 items-center gap-2 rounded-md bg-danger px-4 text-xs font-semibold text-canvas hover:brightness-110 focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><Trash size={14} aria-hidden="true" />{removingConnectionId !== null ? "Removing..." : "Remove connection"}</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {connectionNotice && (
+        <div role={connectionNotice.error ? "alert" : "status"} className={`fixed bottom-5 left-1/2 z-[60] -translate-x-1/2 rounded-md border px-3 py-2 text-xs shadow-xl ${connectionNotice.error ? "border-danger/40 bg-panel text-danger" : "border-line-strong bg-raised text-ink"}`}>
+          {connectionNotice.message}
         </div>
       )}
     </main>
