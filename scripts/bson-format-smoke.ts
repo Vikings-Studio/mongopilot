@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
 import { Decimal128, Int32, Long, ObjectId } from "mongodb"
-import { serializeBson } from "../src/main/bson-serialization"
+import { parseSerializedDocument, serializeBson, serializeMongoDocument, stringifyCanonicalExtendedJson, stringifyMongoDocument } from "../src/main/bson-serialization"
 import { getBsonDisplay } from "../src/renderer/src/bson-format"
 
 const cases: Array<[unknown, string]> = [
   [{ $oid: "507f1f77bcf86cd799439011" }, "ObjectId('507f1f77bcf86cd799439011')"],
-  [{ $date: { $numberLong: "1609459200000" } }, "ISODate('2021-01-01T00:00:00.000Z')"],
+  [{ $date: { $numberLong: "1609459200000" } }, "2021-01-01T00:00:00.000+00:00"],
+  [{ $date: "2021-01-01T00:00:00.000Z" }, "2021-01-01T00:00:00.000+00:00"],
   [{ $numberInt: "42" }, "42"],
   [{ $numberLong: "9007199254740993" }, "Long('9007199254740993')"],
   [{ $numberDouble: "Infinity" }, "Double('Infinity')"],
@@ -38,5 +39,39 @@ assert.deepEqual(serializedDocument, {
   price: { $numberDecimal: "12.34" },
 })
 assert.doesNotMatch(JSON.stringify(serializedDocument), /"buffer"/)
+assert.equal(stringifyCanonicalExtendedJson(new ObjectId(objectId)), `{"$oid":"${objectId}"}`)
+
+const sourceAwareDocument = serializeMongoDocument({
+  _id: new ObjectId(objectId),
+  nested: { value: "preserved" },
+})
+assert.deepEqual(sourceAwareDocument, {
+  _id: { $oid: objectId },
+  nested: { value: "preserved" },
+})
+assert.doesNotMatch(JSON.stringify(sourceAwareDocument), /"buffer"/)
+
+const crossRuntimeObjectId = {
+  _bsontype: "ObjectId",
+  buffer: Array.from({ length: 12 }, (_value, index) => index),
+  toHexString: () => objectId,
+}
+const crossRuntimeDocument = serializeMongoDocument({ _id: crossRuntimeObjectId, status: "active" })
+assert.deepEqual(crossRuntimeDocument, { _id: { $oid: objectId }, status: "active" })
+assert.doesNotMatch(JSON.stringify(crossRuntimeDocument), /"buffer"/)
+
+const transportDocument = stringifyMongoDocument({
+  _id: new ObjectId(objectId),
+  updatedAt: new Date("2026-04-05T11:09:21.627Z"),
+})
+assert.equal(typeof transportDocument, "string")
+const parsedTransport = parseSerializedDocument(transportDocument)
+assert.deepEqual(parsedTransport, {
+  _id: { $oid: objectId },
+  updatedAt: { $date: { $numberLong: "1775387361627" } },
+})
+if (parsedTransport === null || typeof parsedTransport !== "object" || Array.isArray(parsedTransport)) throw new Error("Transport document was not an object.")
+assert.equal(getBsonDisplay(parsedTransport._id)?.text, `ObjectId('${objectId}')`)
+assert.equal(getBsonDisplay(parsedTransport.updatedAt)?.text, "2026-04-05T11:09:21.627+00:00")
 
 console.log(`BSON display formatting and driver serialization verified for ${cases.length} canonical types.`)

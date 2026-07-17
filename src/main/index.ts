@@ -1,7 +1,7 @@
 import { join } from "node:path"
 import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron"
 import icon from "../../resources/icon.png?asset"
-import type { AggregateInput, CollectionReportInput, CollectionTargetInput, DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput } from "../shared/types"
+import type { AggregateInput, CollectionReportInput, CollectionTargetInput, DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
 import { MongoService } from "./mongo-service"
 import { MongoMcpServer } from "./mongo-mcp-server"
@@ -12,9 +12,14 @@ let mongo: MongoService
 let copilot: OpencodeService
 let updates: UpdateService
 const applicationName = "Mongo Pilot"
+const applicationDescription = "A MongoDB desktop workspace with an embedded OpenCode copilot."
+const applicationAuthor = "Vikings Studio"
+const applicationWebsite = "https://github.com/Vikings-Studio/mongopilot"
 const minimumWindowSize = { width: 1100, height: 720 }
+const userDataPath = join(app.getPath("appData"), "mongo-pilot")
 
 app.setName(applicationName)
+app.setPath("userData", userDataPath)
 process.title = applicationName
 
 function createWindow(): BrowserWindow {
@@ -64,6 +69,11 @@ function registerIpc(store: ConnectionStore): void {
   ipcMain.handle("database:listCollections", (_event, id: string, database: string) => mongo.listCollections(id, database))
   ipcMain.handle("database:find", (_event, input: FindInput) => mongo.find(input))
   ipcMain.handle("database:aggregate", (_event, input: AggregateInput) => mongo.aggregate(input))
+  ipcMain.handle("database:generateVisualization", async (_event, input: VisualizationGenerateInput) => {
+    const spec = await copilot.generateVisualization(input)
+    return mongo.runVisualization({ ...input, spec })
+  })
+  ipcMain.handle("database:refreshVisualization", (_event, input: VisualizationRefreshInput) => mongo.runVisualization(input))
   ipcMain.handle("database:listIndexes", (_event, input: CollectionTargetInput) => mongo.listIndexes(input))
   ipcMain.handle("database:analyzeSchema", (_event, input: SchemaAnalysisInput) => mongo.analyzeSchema(input))
   ipcMain.handle("database:generateReport", (_event, input: CollectionReportInput) => mongo.generateReport(input))
@@ -82,7 +92,15 @@ function registerIpc(store: ConnectionStore): void {
 
 void app.whenReady().then(() => {
   app.setAppUserModelId("com.mongopilot.desktop")
-  app.setAboutPanelOptions({ applicationName, applicationVersion: app.getVersion() })
+  app.setAboutPanelOptions({
+    applicationName,
+    applicationVersion: app.getVersion(),
+    copyright: `Copyright © ${new Date().getFullYear()} ${applicationAuthor}`,
+    credits: `${applicationDescription}\n\nBuilt by ${applicationAuthor}.`,
+    authors: [applicationAuthor],
+    website: applicationWebsite,
+    iconPath: icon,
+  })
   if (process.platform === "darwin") app.dock?.setIcon(icon)
   app.on("browser-window-created", (_event, window) => {
     window.setMinimumSize(minimumWindowSize.width, minimumWindowSize.height)
@@ -105,5 +123,5 @@ app.on("before-quit", () => {
 })
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit()
+  if (process.platform !== "darwin" || !app.isPackaged) app.quit()
 })

@@ -15,6 +15,7 @@
     "test:aggregation": "tsx scripts/aggregation-pipeline-smoke.ts",
     "test:mcp": "tsx scripts/mcp-smoke.ts",
     "test:schema": "tsx scripts/schema-analysis-smoke.ts",
+    "test:visualization": "tsx scripts/visualization-smoke.ts",
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder",
     "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --publish never",

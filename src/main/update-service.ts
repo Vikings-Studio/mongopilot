@@ -1,8 +1,9 @@
 import { app, type BrowserWindow } from "electron"
-import { autoUpdater, type ProgressInfo, type UpdateInfo } from "electron-updater"
+import electronUpdater, { type ProgressInfo, type UpdateInfo } from "electron-updater"
 import type { UpdateStatus } from "../shared/types"
 
 const updateCheckIntervalMs = 4 * 60 * 60 * 1_000
+const { autoUpdater } = electronUpdater
 
 export class UpdateService {
   private readonly windows = new Set<BrowserWindow>()

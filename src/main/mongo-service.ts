@@ -1,9 +1,11 @@
 import { MongoClient, type Document, type Filter, type Sort, type UpdateFilter } from "mongodb"
-import type { AgentAccessMode, AggregateInput, AggregateResult, CollectionIndexInfo, CollectionInfo, CollectionReportInput, CollectionReportResult, CollectionTargetInput, DatabaseInfo, DocumentTargetInput, FindInput, FindResult, ReplaceDocumentInput, SavedConnection, SchemaAnalysisInput, SchemaAnalysisResult } from "../shared/types"
+import type { AgentAccessMode, AggregateInput, AggregateResult, CollectionIndexInfo, CollectionInfo, CollectionReportInput, CollectionReportResult, CollectionTargetInput, DatabaseInfo, DocumentTargetInput, FindInput, FindResult, ReplaceDocumentInput, SavedConnection, SchemaAnalysisInput, SchemaAnalysisResult, VisualizationResult, VisualizationSpec } from "../shared/types"
 import { parseAggregationPipeline } from "./aggregation-pipeline"
-import { parseExtendedJson, serializeBson, serializeBsonArray, stringifyCanonicalExtendedJson } from "./bson-serialization"
+import { parseExtendedJson, serializeBson, serializeBsonArray, stringifyCanonicalExtendedJson, stringifyMongoDocument } from "./bson-serialization"
 import type { ConnectionStore } from "./connection-store"
 import { analyzeDocuments } from "./schema-analysis"
+import { parseVisualizationSpec } from "./visualization-spec"
+import { normalizeVisualizationValue } from "./visualization-values"
 
 interface ActiveConnection {
   client: MongoClient
@@ -86,7 +88,7 @@ export class MongoService {
     return {
       documents: documents.map((document) => ({
         id: stringifyCanonicalExtendedJson(document._id),
-        document: serializeBson(document),
+        document: stringifyMongoDocument(document),
       })),
       total,
       durationMs: Math.round(performance.now() - started),
@@ -117,8 +119,27 @@ export class MongoService {
       .batchSize(limit)
       .toArray()
     return {
-      documents: serializeBsonArray(documents).map((document, index) => ({ id: `aggregate-result-${index}`, document })),
+      documents: documents.map((document, index) => ({ id: `aggregate-result-${index}`, document: stringifyMongoDocument(document) })),
       durationMs: Math.round(performance.now() - started),
+    }
+  }
+
+  async runVisualization(input: CollectionTargetInput & { spec: VisualizationSpec }): Promise<VisualizationResult> {
+    const active = this.requireRead(input.connectionId)
+    const spec = parseVisualizationSpec(input.spec)
+    const pipeline = parseAggregationPipeline(JSON.stringify(spec.pipeline))
+    const started = performance.now()
+    const documents = await active.client.db(input.database).collection(input.collection)
+      .aggregate([...pipeline, { $limit: 100 }], { allowDiskUse: true, maxTimeMS: 30_000, promoteValues: false })
+      .batchSize(100)
+      .toArray()
+    return {
+      spec,
+      rows: documents.map((document) => Object.fromEntries(
+        Object.entries(document).map(([key, value]) => [key, normalizeVisualizationValue(value)]),
+      )),
+      durationMs: Math.round(performance.now() - started),
+      generatedAt: new Date().toISOString(),
     }
   }
 

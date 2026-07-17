@@ -18,6 +18,10 @@ function quote(value: string): string {
   return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`
 }
 
+function compassDate(value: Date): string {
+  return value.toISOString().replace(/Z$/, "+00:00")
+}
+
 function nestedDisplay(value: unknown): string {
   return getBsonDisplay(value)?.text ?? JSON.stringify(value)
 }
@@ -33,10 +37,11 @@ export function getBsonDisplay(value: unknown): BsonDisplay | null {
     const milliseconds = isRecord(value.$date) && typeof value.$date.$numberLong === "string"
       ? value.$date.$numberLong
       : null
-    const date = milliseconds === null ? null : new Date(Number(milliseconds))
+    const date = typeof value.$date === "string" ? new Date(value.$date) : milliseconds === null ? null : new Date(Number(milliseconds))
     if (date && !Number.isNaN(date.valueOf())) {
-      return { kind: "date", text: `ISODate(${quote(date.toISOString())})` }
+      return { kind: "date", text: compassDate(date) }
     }
+    return { kind: "date", text: milliseconds === null ? "Invalid Date" : `Date(${quote(milliseconds)})` }
   }
 
   if (hasOnlyKeys(value, ["$numberInt"]) && typeof value.$numberInt === "string") {

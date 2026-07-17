@@ -72,8 +72,45 @@ export interface AggregateInput extends CollectionTargetInput {
 }
 
 export interface AggregateResult {
-  documents: Array<{ id: string; document: unknown }>
+  documents: Array<{ id: string; document: string }>
   durationMs: number
+}
+
+export type VisualizationChartType = "bar" | "line" | "area" | "pie" | "scatter" | "table"
+
+export interface VisualizationSeries {
+  field: string
+  label: string
+}
+
+export interface VisualizationSpec {
+  title: string
+  description: string
+  chartType: VisualizationChartType
+  pipeline: Array<Record<string, unknown>>
+  categoryField: string
+  series: VisualizationSeries[]
+}
+
+export interface VisualizationGenerateInput extends CollectionTargetInput {
+  prompt: string
+  model?: {
+    providerID: string
+    modelID: string
+  }
+}
+
+export interface VisualizationRefreshInput extends CollectionTargetInput {
+  spec: VisualizationSpec
+}
+
+export type VisualizationValue = string | number | boolean | null
+
+export interface VisualizationResult {
+  spec: VisualizationSpec
+  rows: Array<Record<string, VisualizationValue>>
+  durationMs: number
+  generatedAt: string
 }
 
 export interface CollectionReportInput extends CollectionTargetInput {
@@ -101,7 +138,7 @@ export interface FindInput {
 export interface FindResult {
   documents: Array<{
     id: string
-    document: unknown
+    document: string
   }>
   total: number
   durationMs: number
@@ -193,6 +230,8 @@ export interface MongoPilotApi {
     listCollections(connectionId: string, database: string): Promise<CollectionInfo[]>
     find(input: FindInput): Promise<FindResult>
     aggregate(input: AggregateInput): Promise<AggregateResult>
+    generateVisualization(input: VisualizationGenerateInput): Promise<VisualizationResult>
+    refreshVisualization(input: VisualizationRefreshInput): Promise<VisualizationResult>
     listIndexes(input: CollectionTargetInput): Promise<CollectionIndexInfo[]>
     analyzeSchema(input: SchemaAnalysisInput): Promise<SchemaAnalysisResult>
     generateReport(input: CollectionReportInput): Promise<CollectionReportResult>

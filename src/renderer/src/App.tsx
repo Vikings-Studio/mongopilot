@@ -45,22 +45,39 @@ import type {
   SaveConnectionInput,
   SchemaAnalysisResult,
   UpdateStatus,
+  VisualizationResult,
 } from "../../shared/types"
 import { getBsonDisplay, type BsonDisplayKind } from "./bson-format"
+import { CustomSelect } from "./CustomSelect"
+import { VisualizationPanel } from "./VisualizationPanel"
 
 type Message = { id: string; role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
-type CollectionTab = "Documents" | "Aggregations" | "Schema" | "Indexes" | "Reports"
+type CollectionTab = "Documents" | "Aggregations" | "Schema" | "Indexes" | "Reports" | "Visualizations"
 
 const pageSizes = [10, 20, 50, 100] as const
 const schemaSampleSizes = [50, 100, 250, 500, 1_000] as const
 const integerFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 })
+const sortPresets = [
+  { label: "Natural order", value: "{}" },
+  { label: "Newest ObjectId", value: '{"_id":-1}' },
+  { label: "Oldest ObjectId", value: '{"_id":1}' },
+  { label: "Recently updated", value: '{"updatedAt":-1}' },
+  { label: "Recently created", value: '{"createdAt":-1}' },
+] as const
 const defaultAggregationPipeline = `[
   { "$limit": 20 }
 ]`
 
 function createMessage(role: Message["role"], text: string): Message {
   return { id: crypto.randomUUID(), role, text }
+}
+
+function readPreferredModel(): { providerID: string; modelID: string } | undefined {
+  const stored = localStorage.getItem("mongo-pilot:copilot-model")
+  const separator = stored?.indexOf("/") ?? -1
+  if (!stored || separator <= 0 || separator === stored.length - 1) return undefined
+  return { providerID: stored.slice(0, separator), modelID: stored.slice(separator + 1) }
 }
 const panelLimits = {
   left: { min: 180, max: 420, initial: 240 },
@@ -206,18 +223,22 @@ function UpdateControl({ status, onAction }: { status: UpdateStatus | null; onAc
 
 function JsonPrimitive({ value }: { value: unknown }) {
   if (value === null) return <span className="text-faint">null</span>
-  if (typeof value === "string") return <span className="break-all text-muted">{JSON.stringify(value)}</span>
-  if (typeof value === "boolean") return <span className="text-warning">{String(value)}</span>
-  return <span className="text-ink">{String(value)}</span>
+  if (typeof value === "string") return <span className="break-all text-bson-string">{JSON.stringify(value)}</span>
+  if (typeof value === "boolean") return <span className="text-bson-number">{String(value)}</span>
+  return <span className="text-bson-number">{String(value)}</span>
 }
 
 const bsonTextColor: Record<BsonDisplayKind, string> = {
-  id: "text-danger",
-  date: "text-accent-strong",
-  number: "text-warning",
+  id: "text-bson-id",
+  date: "text-bson-date",
+  number: "text-bson-number",
   binary: "text-muted",
   regex: "text-accent",
   special: "text-muted",
+}
+
+function documentKey(key: string): string {
+  return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
 }
 
 function JsonValue({ value, path }: { value: unknown; path: string }) {
@@ -232,8 +253,8 @@ function JsonValue({ value, path }: { value: unknown; path: string }) {
     ? value.map((item, index) => [String(index), item] as const)
     : Object.entries(value as Record<string, unknown>)
   const summary = isArray
-    ? `[${entries.length} item${entries.length === 1 ? "" : "s"}]`
-    : `{${entries.length} key${entries.length === 1 ? "" : "s"}}`
+    ? `Array (${entries.length})`
+    : "Object"
 
   return (
     <span className="inline-block min-w-0 align-top">
@@ -251,7 +272,7 @@ function JsonValue({ value, path }: { value: unknown; path: string }) {
         <span className="mt-1 block border-l border-line pl-4">
           {entries.map(([key, child]) => (
             <span key={`${path}.${key}`} className="block min-h-6 leading-6">
-              <span className="text-faint">{isArray ? key : JSON.stringify(key)}: </span>
+              <span className="font-semibold text-muted">{isArray ? key : documentKey(key)}: </span>
               <JsonValue value={child} path={`${path}.${key}`} />
             </span>
           ))}
@@ -269,12 +290,33 @@ function JsonDocument({ document }: { document: unknown }) {
     <div className="min-w-0 font-mono text-xs leading-6">
       {Object.entries(document as Record<string, unknown>).map(([key, value]) => (
         <div key={key} className="min-h-6">
-          <span className="text-faint">{JSON.stringify(key)}: </span>
+          <span className="font-semibold text-muted">{documentKey(key)}: </span>
           <JsonValue value={value} path={key} />
         </div>
       ))}
     </div>
   )
+}
+
+function parseTransportDocument(document: string): unknown {
+  try {
+    return JSON.parse(document) as unknown
+  } catch {
+    return document
+  }
+}
+
+function prettyTransportDocument(document: string): string {
+  const parsed = parseTransportDocument(document)
+  return typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2)
+}
+
+function desktopOperationError(reason: unknown, fallback: string): string {
+  const message = reason instanceof Error ? reason.message : String(reason)
+  if (message.includes("No handler registered")) {
+    return "Mongo Pilot was updated while its desktop process was still running. Fully quit and reopen Mongo Pilot, then try again."
+  }
+  return reason instanceof Error ? reason.message : fallback
 }
 
 function SchemaPanel({
@@ -298,9 +340,7 @@ function SchemaPanel({
         <IconButton label="Refresh schema analysis" onClick={onRefresh}><ArrowClockwise size={15} aria-hidden="true" /></IconButton>
         <div className="mx-1 h-4 border-l border-line" />
         <label htmlFor="schema-sample-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Sample</label>
-        <select id="schema-sample-size" value={sampleSize} disabled={loading} onChange={(event) => onSampleSizeChange(Number(event.target.value))} className="h-7 rounded border border-line bg-canvas px-1.5 font-mono text-[10px] tabular-nums text-muted focus-visible:border-accent focus-visible:outline-none">
-          {schemaSampleSizes.map((size) => <option key={size} value={size}>{integerFormatter.format(size)}</option>)}
-        </select>
+        <CustomSelect id="schema-sample-size" ariaLabel="Schema sample size" value={sampleSize} disabled={loading} options={schemaSampleSizes.map((size) => ({ value: size, label: integerFormatter.format(size) }))} onChange={onSampleSizeChange} className="w-20" buttonClassName="h-7 font-mono text-[10px] tabular-nums" />
         {analysis && <span className="ml-auto font-mono text-[9px] tabular-nums text-faint">{integerFormatter.format(analysis.sampleCount)} SAMPLED · {integerFormatter.format(analysis.durationMs)} MS</span>}
       </div>
       <div className="scrollbar-thin flex-1 overflow-auto p-3">
@@ -401,9 +441,7 @@ function AggregationsPanel({
         </div>
         <div className="mt-2 flex items-center gap-2">
           <label htmlFor="aggregation-limit" className="font-mono text-[9px] uppercase tracking-wider text-faint">Max results</label>
-          <select id="aggregation-limit" value={limit} disabled={loading} onChange={(event) => onLimitChange(Number(event.target.value))} className="h-8 rounded border border-line bg-canvas px-2 font-mono text-[10px] tabular-nums text-muted focus-visible:border-accent focus-visible:outline-none">
-            {pageSizes.map((size) => <option key={size} value={size}>{integerFormatter.format(size)}</option>)}
-          </select>
+          <CustomSelect id="aggregation-limit" ariaLabel="Maximum aggregation results" value={limit} disabled={loading} options={pageSizes.map((size) => ({ value: size, label: integerFormatter.format(size) }))} onChange={onLimitChange} className="w-20" buttonClassName="h-8 font-mono text-[10px] tabular-nums" />
           <button type="submit" disabled={loading} className="ml-auto flex h-9 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas hover:bg-accent-strong focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-shell focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"><Lightning size={14} weight="fill" aria-hidden="true" />{loading ? "Running..." : "Run pipeline"}</button>
         </div>
         {error && <div role="alert" className="mt-2 rounded border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">{error}</div>}
@@ -419,7 +457,7 @@ function AggregationsPanel({
             {result.documents.map((row, index) => (
               <article key={row.id} className="grid grid-cols-[36px_minmax(0,1fr)] text-xs">
                 <div className="border-r border-line bg-shell py-3 text-center font-mono tabular-nums text-faint">{String(index + 1).padStart(2, "0")}</div>
-                <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3"><JsonDocument document={row.document} /></div>
+                <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3"><JsonDocument document={parseTransportDocument(row.document)} /></div>
               </article>
             ))}
           </div>
@@ -444,9 +482,7 @@ function ReportsPanel({ report, loading, error, sampleSize, onSampleSizeChange, 
         <IconButton label="Generate collection report" onClick={onGenerate}><ArrowClockwise size={15} aria-hidden="true" /></IconButton>
         <div className="mx-1 h-4 border-l border-line" />
         <label htmlFor="report-sample-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Schema sample</label>
-        <select id="report-sample-size" value={sampleSize} disabled={loading} onChange={(event) => onSampleSizeChange(Number(event.target.value))} className="h-7 rounded border border-line bg-canvas px-1.5 font-mono text-[10px] tabular-nums text-muted focus-visible:border-accent focus-visible:outline-none">
-          {schemaSampleSizes.map((size) => <option key={size} value={size}>{integerFormatter.format(size)}</option>)}
-        </select>
+        <CustomSelect id="report-sample-size" ariaLabel="Report schema sample size" value={sampleSize} disabled={loading} options={schemaSampleSizes.map((size) => ({ value: size, label: integerFormatter.format(size) }))} onChange={onSampleSizeChange} className="w-20" buttonClassName="h-7 font-mono text-[10px] tabular-nums" />
         {report && <span className="ml-auto font-mono text-[9px] tabular-nums text-faint">GENERATED {new Date(report.generatedAt).toLocaleString()} · {integerFormatter.format(report.durationMs)} MS</span>}
       </div>
       <div className="scrollbar-thin flex-1 overflow-auto p-3">
@@ -900,6 +936,10 @@ export default function App() {
   const [reportSampleSize, setReportSampleSize] = useState(250)
   const [reportLoading, setReportLoading] = useState(false)
   const [reportError, setReportError] = useState("")
+  const [visualizationPrompt, setVisualizationPrompt] = useState("")
+  const [visualizationResult, setVisualizationResult] = useState<VisualizationResult | null>(null)
+  const [visualizationLoading, setVisualizationLoading] = useState(false)
+  const [visualizationError, setVisualizationError] = useState("")
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null)
   const [editDocumentText, setEditDocumentText] = useState("")
   const [copiedDocumentId, setCopiedDocumentId] = useState<string | null>(null)
@@ -1046,6 +1086,10 @@ export default function App() {
     setReport(null)
     setReportLoading(false)
     setReportError("")
+    setVisualizationPrompt("")
+    setVisualizationResult(null)
+    setVisualizationLoading(false)
+    setVisualizationError("")
     collectionTargetRef.current = ""
     setTotal(0)
     setPage(1)
@@ -1148,6 +1192,10 @@ export default function App() {
         setReport(null)
         setReportLoading(false)
         setReportError("")
+        setVisualizationPrompt("")
+        setVisualizationResult(null)
+        setVisualizationLoading(false)
+        setVisualizationError("")
         collectionTargetRef.current = ""
         setDocuments([])
         setDuration(null)
@@ -1186,6 +1234,10 @@ export default function App() {
     setReport(null)
     setReportLoading(false)
     setReportError("")
+    setVisualizationPrompt("")
+    setVisualizationResult(null)
+    setVisualizationLoading(false)
+    setVisualizationError("")
     setEditingDocumentId(null)
     setPendingDeleteDocumentId(null)
     await runQuery({ connectionId, database, collection, filter: "{}", sort: preferences.sort, pageSize: preferences.pageSize, page: 1 })
@@ -1244,7 +1296,7 @@ export default function App() {
       })
       if (collectionTargetRef.current === target) setSchemaAnalysis(result)
     } catch (reason) {
-      if (collectionTargetRef.current === target) setSchemaError(reason instanceof Error ? reason.message : "Could not analyze this collection schema.")
+      if (collectionTargetRef.current === target) setSchemaError(desktopOperationError(reason, "Could not analyze this collection schema."))
     } finally {
       if (collectionTargetRef.current === target) setSchemaLoading(false)
     }
@@ -1266,7 +1318,7 @@ export default function App() {
         setIndexesLoaded(true)
       }
     } catch (reason) {
-      if (collectionTargetRef.current === target) setIndexesError(reason instanceof Error ? reason.message : "Could not load collection indexes.")
+      if (collectionTargetRef.current === target) setIndexesError(desktopOperationError(reason, "Could not load collection indexes."))
     } finally {
       if (collectionTargetRef.current === target) setIndexesLoading(false)
     }
@@ -1287,7 +1339,7 @@ export default function App() {
       })
       if (collectionTargetRef.current === target) setAggregationResult(result)
     } catch (reason) {
-      if (collectionTargetRef.current === target) setAggregationError(reason instanceof Error ? reason.message : "Could not run this aggregation pipeline.")
+      if (collectionTargetRef.current === target) setAggregationError(desktopOperationError(reason, "Could not run this aggregation pipeline."))
     } finally {
       if (collectionTargetRef.current === target) setAggregationLoading(false)
     }
@@ -1307,9 +1359,51 @@ export default function App() {
       })
       if (collectionTargetRef.current === target) setReport(result)
     } catch (reason) {
-      if (collectionTargetRef.current === target) setReportError(reason instanceof Error ? reason.message : "Could not generate this collection report.")
+      if (collectionTargetRef.current === target) setReportError(desktopOperationError(reason, "Could not generate this collection report."))
     } finally {
       if (collectionTargetRef.current === target) setReportLoading(false)
+    }
+  }
+
+  async function generateVisualization(): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot || !visualizationPrompt.trim()) return
+    const target = `${activeConnection.id}:${selectedDatabase}:${selectedCollection}`
+    setVisualizationLoading(true)
+    setVisualizationError("")
+    setVisualizationResult(null)
+    try {
+      const result = await window.mongoPilot.database.generateVisualization({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+        prompt: visualizationPrompt.trim(),
+        model: readPreferredModel(),
+      })
+      if (collectionTargetRef.current === target) setVisualizationResult(result)
+    } catch (reason) {
+      if (collectionTargetRef.current === target) setVisualizationError(desktopOperationError(reason, "Could not create this visualization."))
+    } finally {
+      if (collectionTargetRef.current === target) setVisualizationLoading(false)
+    }
+  }
+
+  async function refreshVisualization(): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot || !visualizationResult) return
+    const target = `${activeConnection.id}:${selectedDatabase}:${selectedCollection}`
+    setVisualizationLoading(true)
+    setVisualizationError("")
+    try {
+      const result = await window.mongoPilot.database.refreshVisualization({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+        spec: visualizationResult.spec,
+      })
+      if (collectionTargetRef.current === target) setVisualizationResult(result)
+    } catch (reason) {
+      if (collectionTargetRef.current === target) setVisualizationError(desktopOperationError(reason, "Could not refresh this visualization."))
+    } finally {
+      if (collectionTargetRef.current === target) setVisualizationLoading(false)
     }
   }
 
@@ -1320,9 +1414,9 @@ export default function App() {
     if (tab === "Reports" && !report && !reportLoading) void generateReport()
   }
 
-  async function copyDocument(id: string, document: unknown): Promise<void> {
+  async function copyDocument(id: string, document: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(document, null, 2))
+      await navigator.clipboard.writeText(prettyTransportDocument(document))
       setCopiedDocumentId(id)
       window.setTimeout(() => setCopiedDocumentId((current) => current === id ? null : current), 1_500)
     } catch (reason) {
@@ -1330,10 +1424,10 @@ export default function App() {
     }
   }
 
-  function editDocument(id: string, document: unknown): void {
+  function editDocument(id: string, document: string): void {
     setError("")
     setEditingDocumentId(id)
-    setEditDocumentText(JSON.stringify(document, null, 2))
+    setEditDocumentText(prettyTransportDocument(document))
   }
 
   async function saveDocument(id: string): Promise<void> {
@@ -1411,6 +1505,7 @@ export default function App() {
     agentAccessMode: agentMode,
     availableConnections: connections.map(({ name, host, agentAccessMode, favorite }) => ({ name, host, agentAccessMode, favorite })),
   }
+  const activeSortPreset = sortPresets.some((preset) => preset.value === sort) ? sort : "custom"
 
   return (
     <main className="grid h-[100dvh] min-h-[720px] min-w-[1100px] grid-rows-[40px_minmax(0,1fr)] overflow-hidden bg-canvas text-ink">
@@ -1529,7 +1624,7 @@ export default function App() {
           ) : (
             <>
               <nav aria-label="Collection views" className="flex h-11 shrink-0 items-end gap-5 border-b border-line px-4">
-                {(["Documents", "Aggregations", "Schema", "Indexes", "Reports"] as const).map((tab) => (
+                {(["Documents", "Aggregations", "Schema", "Indexes", "Reports", "Visualizations"] as const).map((tab) => (
                   <button key={tab} type="button" disabled={!selectedCollection} onClick={() => selectCollectionTab(tab)} className={`h-11 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${activeCollectionTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
                 ))}
               </nav>
@@ -1542,7 +1637,11 @@ export default function App() {
                     <textarea id="filter" value={filter} onChange={(event) => setFilter(event.target.value)} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none" />
                   </div>
                   <div className="min-w-0 rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
-                    <div className="flex h-8 items-center border-b border-line px-3 font-mono text-[10px] uppercase tracking-wider text-faint">Sort</div>
+                    <div className="flex h-8 items-center gap-2 border-b border-line px-3 font-mono text-[10px] uppercase tracking-wider text-faint">
+                      <span>Sort</span>
+                      <label htmlFor="sort-preset" className="sr-only">Sort preset</label>
+                      <CustomSelect id="sort-preset" ariaLabel="Sort preset" value={activeSortPreset} options={[...(activeSortPreset === "custom" ? [{ value: "custom", label: "Custom" }] : []), ...sortPresets]} onChange={(value) => { if (value !== "custom") setSort(value) }} align="end" className="ml-auto w-40" buttonClassName="h-7 border-0 bg-transparent px-1 text-right font-sans text-[10px] normal-case tracking-normal" menuClassName="w-44" />
+                    </div>
                     <label htmlFor="sort" className="sr-only">MongoDB document sort</label>
                     <textarea id="sort" value={sort} onChange={(event) => setSort(event.target.value)} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none" />
                   </div>
@@ -1556,18 +1655,7 @@ export default function App() {
                 <span className="flex h-8 items-center gap-1.5 rounded bg-raised px-2.5 text-xs text-ink"><BracketsCurly size={14} aria-hidden="true" />JSON</span>
                 <div className="ml-auto flex items-center gap-2">
                   <label htmlFor="page-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Rows</label>
-                  <select
-                    id="page-size"
-                    value={pageSize}
-                    onChange={(event) => {
-                      const nextPageSize = Number(event.target.value)
-                      void runQuery({ page: 1, pageSize: nextPageSize })
-                    }}
-                    disabled={querying || !selectedCollection}
-                    className="h-7 rounded border border-line bg-canvas px-1.5 font-mono text-[10px] text-muted focus-visible:border-accent focus-visible:outline-none"
-                  >
-                    {pageSizes.map((size) => <option key={size} value={size}>{size}</option>)}
-                  </select>
+                  <CustomSelect id="page-size" ariaLabel="Rows per page" value={pageSize} disabled={querying || !selectedCollection} options={pageSizes.map((size) => ({ value: size, label: String(size) }))} onChange={(nextPageSize) => void runQuery({ page: 1, pageSize: nextPageSize })} align="end" className="w-16" buttonClassName="h-7 font-mono text-[10px] tabular-nums" />
                   <div className="flex items-center gap-1">
                     <button type="button" aria-label="Previous page" onClick={() => void runQuery({ page: page - 1 })} disabled={querying || page <= 1} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-30"><CaretLeft size={12} aria-hidden="true" /></button>
                     <span className="min-w-16 text-center font-mono text-[10px] text-faint">{queryRan ? `${page} / ${Math.max(1, Math.ceil(total / pageSize))}` : "- / -"}</span>
@@ -1601,7 +1689,7 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3 pr-28"><JsonDocument document={row.document} /></div>
+                          <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3 pr-28"><JsonDocument document={parseTransportDocument(row.document)} /></div>
                         )}
                         {editingDocumentId !== row.id && (
                           <div className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-line bg-panel p-1 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
@@ -1655,8 +1743,8 @@ export default function App() {
                 />
               ) : activeCollectionTab === "Indexes" ? (
                 <IndexesPanel indexes={indexes} loading={indexesLoading} error={indexesError} onRefresh={() => void loadIndexes()} />
-              ) : (
-                <ReportsPanel
+              ) : activeCollectionTab === "Reports" ? (
+                 <ReportsPanel
                   report={report}
                   loading={reportLoading}
                   error={reportError}
@@ -1666,7 +1754,17 @@ export default function App() {
                     setReport(null)
                     void generateReport(sampleSize)
                   }}
-                  onGenerate={() => void generateReport()}
+                   onGenerate={() => void generateReport()}
+                 />
+              ) : (
+                <VisualizationPanel
+                  prompt={visualizationPrompt}
+                  result={visualizationResult}
+                  loading={visualizationLoading}
+                  error={visualizationError}
+                  onPromptChange={setVisualizationPrompt}
+                  onGenerate={() => void generateVisualization()}
+                  onRefresh={() => void refreshVisualization()}
                 />
               )}
             </>

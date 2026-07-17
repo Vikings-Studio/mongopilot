@@ -21,6 +21,10 @@
   --color-accent-soft: #192218;
   --color-danger: #dc7c73;
   --color-warning: #d1a85a;
+  --color-bson-id: #ff8066;
+  --color-bson-date: #79a8ff;
+  --color-bson-number: #4e9cff;
+  --color-bson-string: #62c995;
   --ease-product: cubic-bezier(0.23, 1, 0.32, 1);
 }
 

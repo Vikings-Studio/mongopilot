@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
-import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, UpdateStatus } from "../shared/types"
+import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, UpdateStatus, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
 
 const api: MongoPilotApi = {
   connections: {
@@ -15,6 +15,8 @@ const api: MongoPilotApi = {
       ipcRenderer.invoke("database:listCollections", connectionId, database),
     find: (input: FindInput) => ipcRenderer.invoke("database:find", input),
     aggregate: (input: AggregateInput) => ipcRenderer.invoke("database:aggregate", input),
+    generateVisualization: (input: VisualizationGenerateInput) => ipcRenderer.invoke("database:generateVisualization", input),
+    refreshVisualization: (input: VisualizationRefreshInput) => ipcRenderer.invoke("database:refreshVisualization", input),
     listIndexes: (input: CollectionTargetInput) => ipcRenderer.invoke("database:listIndexes", input),
     analyzeSchema: (input: SchemaAnalysisInput) => ipcRenderer.invoke("database:analyzeSchema", input),
     generateReport: (input: CollectionReportInput) => ipcRenderer.invoke("database:generateReport", input),

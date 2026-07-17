@@ -3,8 +3,9 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { join } from "node:path"
 import { app } from "electron"
 import { createOpencodeClient, type Config, type OpencodeClient } from "@opencode-ai/sdk/v2"
-import type { CopilotModelsResult, CopilotPromptInput, CopilotReply, CopilotStatus } from "../shared/types"
+import type { CopilotModelsResult, CopilotPromptInput, CopilotReply, CopilotStatus, VisualizationGenerateInput, VisualizationSpec } from "../shared/types"
 import type { MongoMcpServer } from "./mongo-mcp-server"
+import { parseVisualizationReply } from "./visualization-spec"
 
 const mongoReadTools = ["mongo_list_databases", "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_count"] as const
 const mongoWriteTools = ["mongo_insert_one", "mongo_update_one", "mongo_delete_one"] as const
@@ -175,8 +176,8 @@ export class OpencodeService {
       ...mongoWriteTools.map((tool) => [tool, Boolean(hasMongoGrant && mode !== "read-only")] as const),
     ])
     this.promptInFlight = true
-    if (connectionId && mode) this.mongoMcp.setGrant({ connectionId, accessMode: mode })
     try {
+      if (connectionId && mode) this.mongoMcp.setGrant({ connectionId, accessMode: mode })
       const result = await client.session.prompt({
         sessionID: this.sessionId,
         system,
@@ -189,6 +190,53 @@ export class OpencodeService {
         .map((part) => part.text)
         .join("\n")
       return { text: text || "OpenCode returned no text response.", sessionId: this.sessionId }
+    } finally {
+      this.mongoMcp.clearGrant()
+      this.promptInFlight = false
+    }
+  }
+
+  async generateVisualization(input: VisualizationGenerateInput): Promise<VisualizationSpec> {
+    if (input.prompt.trim().length === 0) throw new Error("Describe the visualization you want.")
+    if (input.prompt.length > 4_000) throw new Error("Visualization prompts must be 4,000 characters or shorter.")
+    if (this.promptInFlight) throw new Error("Wait for the current Pilot request to finish.")
+    if (!this.client) {
+      const status = await this.start()
+      if (status.state !== "ready") throw new Error(status.state === "error" ? status.message : "OpenCode is not ready.")
+    }
+    const client = this.client
+    if (!client) throw new Error("OpenCode client is unavailable after startup.")
+    const created = await client.session.create({ title: `Visualize ${input.database}.${input.collection}` })
+    if (!created.data) throw new Error("OpenCode did not create a visualization session.")
+    const system = [
+      "You create safe, declarative MongoDB visualizations for Mongo Pilot.",
+      `The active collection is ${input.database}.${input.collection}.`,
+      "Use read-only mongo tools to inspect a small sample when needed. Never use or suggest writes.",
+      "Return exactly one JSON object and no markdown or commentary.",
+      'The object must have this shape: {"title":"...","description":"...","chartType":"bar|line|area|pie|scatter|table","pipeline":[...],"categoryField":"flatOutputField","series":[{"field":"flatNumericOutputField","label":"..."}]}.',
+      "Use a read-only aggregation pipeline with at most 30 stages. Never use $out, $merge, $function, or server-side JavaScript.",
+      "Project flat output fields. Convert plotted values to finite numbers. Return at most useful grouped data; Mongo Pilot applies a final limit of 100 rows.",
+      "Use table only when the request cannot be represented honestly as a chart. Pie charts must have exactly one series. Other charts may have up to four series.",
+    ].join("\n")
+    const tools = Object.fromEntries([
+      ...mongoReadTools.map((tool) => [tool, true] as const),
+      ...mongoWriteTools.map((tool) => [tool, false] as const),
+    ])
+    this.promptInFlight = true
+    try {
+      this.mongoMcp.setGrant({ connectionId: input.connectionId, accessMode: "read-only" })
+      const result = await client.session.prompt({
+        sessionID: created.data.id,
+        system,
+        tools,
+        model: input.model,
+        parts: [{ type: "text", text: input.prompt.trim() }],
+      })
+      const text = (result.data?.parts ?? [])
+        .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("\n")
+      return parseVisualizationReply(text)
     } finally {
       this.mongoMcp.clearGrant()
       this.promptInFlight = false
