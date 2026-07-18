@@ -1,6 +1,6 @@
 {
   "name": "mongo-pilot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "A MongoDB desktop workspace with an OpenCode copilot.",
   "author": "Vikings Studio",
@@ -21,7 +21,7 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder",
     "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --publish never",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --universal --publish never",
     "dist:windows": "npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
@@ -66,10 +66,14 @@
     "icon": "resources/icon.png",
     "files": [
       "out/**/*",
-      "package.json"
+      "resources/icon.png",
+      "package.json",
+      "!node_modules/opencode-ai{,/**/*}",
+      "!node_modules/opencode-darwin-*{,/**/*}",
+      "!node_modules/opencode-linux-*{,/**/*}",
+      "!node_modules/opencode-windows-*{,/**/*}"
     ],
     "asarUnpack": [
-      "node_modules/opencode-ai/**/*",
       "node_modules/@mongosh/node-runtime-worker-thread/**/*",
       "node_modules/@mongosh/shell-bson/**/*",
       "node_modules/system-ca/**/*",
@@ -90,14 +94,19 @@
       "notarize": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "x64ArchFiles": "Contents/Resources/opencode/**",
       "target": [
         "dmg",
         "zip"
       ],
       "extraResources": [
         {
-          "from": "node_modules/opencode-ai/bin/opencode.exe",
-          "to": "opencode/opencode"
+          "from": "build/opencode/opencode-arm64",
+          "to": "opencode/opencode-arm64"
+        },
+        {
+          "from": "build/opencode/opencode-x64",
+          "to": "opencode/opencode-x64"
         }
       ]
     },

@@ -4,6 +4,14 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-19
+
+### Fixed
+
+- Restored packaged app startup by including the icon loaded during macOS initialization and relying on the signed bundle icon for the Dock.
+- Removed the long pre-window stall by loading the embedded mongosh runtime only when the Shell tab is opened.
+- Replaced the mixed x64 Electron and arm64 OpenCode macOS package with a universal binary for native Intel and Apple Silicon startup.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added

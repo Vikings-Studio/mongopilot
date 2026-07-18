@@ -4,6 +4,7 @@ node_modules/
 # Electron, Vite, and packaging output
 out/
 dist/
+build/opencode/
 release/
 .vite/
 *.asar

@@ -48,11 +48,20 @@ interface ShellSession {
 }
 
 const require = createRequire(import.meta.url)
-const WebWorker = require("web-worker") as unknown
-if (typeof Reflect.get(globalThis, "Worker") !== "function") Object.defineProperty(globalThis, "Worker", { configurable: true, value: WebWorker })
-const { WorkerRuntime } = require("@mongosh/node-runtime-worker-thread") as { WorkerRuntime: MongoshRuntimeConstructor }
+let mongoshRuntimeConstructor: MongoshRuntimeConstructor | undefined
 const shellInputLimit = 256 * 1024
 const shellOutputLimit = 512 * 1024
+
+function getMongoshRuntimeConstructor(): MongoshRuntimeConstructor {
+  if (mongoshRuntimeConstructor) return mongoshRuntimeConstructor
+  const WebWorker = require("web-worker") as unknown
+  if (typeof Reflect.get(globalThis, "Worker") !== "function") {
+    Object.defineProperty(globalThis, "Worker", { configurable: true, value: WebWorker })
+  }
+  const runtimeModule = require("@mongosh/node-runtime-worker-thread") as { WorkerRuntime: MongoshRuntimeConstructor }
+  mongoshRuntimeConstructor = runtimeModule.WorkerRuntime
+  return mongoshRuntimeConstructor
+}
 
 export class MongoService {
   private readonly active = new Map<string, ActiveConnection>()
@@ -104,6 +113,7 @@ export class MongoService {
     this.requireWrite(input.connectionId)
     let session = this.shells.get(input.connectionId)
     if (!session) {
+      const WorkerRuntime = getMongoshRuntimeConstructor()
       const runtime = new WorkerRuntime(await this.store.getUri(input.connectionId), {})
       session = { runtime, printed: [], printedLength: 0, outputTruncated: false, clearRequested: false }
       runtime.setEvaluationListener({

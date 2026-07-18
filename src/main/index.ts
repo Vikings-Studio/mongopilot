@@ -106,7 +106,6 @@ void app.whenReady().then(() => {
     website: applicationWebsite,
     iconPath: icon,
   })
-  if (process.platform === "darwin") app.dock?.setIcon(icon)
   app.on("browser-window-created", (_event, window) => {
     window.setMinimumSize(minimumWindowSize.width, minimumWindowSize.height)
     window.setResizable(true)

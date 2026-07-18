@@ -251,7 +251,11 @@ export class OpencodeService {
 
   private async launchServer(config: Config): Promise<{ url: string; close(): void }> {
     const executable = app.isPackaged
-      ? join(process.resourcesPath, "opencode", process.platform === "win32" ? "opencode.exe" : "opencode")
+      ? join(
+          process.resourcesPath,
+          "opencode",
+          process.platform === "win32" ? "opencode.exe" : process.platform === "darwin" ? `opencode-${process.arch}` : "opencode",
+        )
       : join(app.getAppPath(), "node_modules", "opencode-ai", "bin", "opencode.exe")
     const processHandle = spawn(executable, ["serve", "--hostname=127.0.0.1", "--port=0"], {
       env: { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
