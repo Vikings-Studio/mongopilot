@@ -17,6 +17,8 @@ import {
   HardDrives,
   Key,
   Lightning,
+  Lock,
+  LockOpen,
   MagnifyingGlass,
   PaperPlaneTilt,
   PencilSimple,
@@ -37,6 +39,8 @@ import type {
   CollectionInfo,
   CollectionIndexInfo,
   CollectionReportResult,
+  ConnectionAccessMode,
+  ConnectionEnvironment,
   CopilotModel,
   CopilotStatus,
   DatabaseInfo,
@@ -50,15 +54,23 @@ import type {
 } from "../../shared/types"
 import { getBsonDisplay, type BsonDisplayKind } from "./bson-format"
 import { CustomSelect } from "./CustomSelect"
+import { ShellPanel } from "./ShellPanel"
 import { VisualizationPanel } from "./VisualizationPanel"
 import { readSavedVisualization, saveVisualization } from "./visualization-storage"
 
 type Message = { id: string; role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
-type CollectionTab = "Documents" | "Aggregations" | "Schema" | "Indexes" | "Reports" | "Visualizations"
+type CollectionTab = "Documents" | "Aggregations" | "Schema" | "Indexes" | "Reports" | "Visualizations" | "Shell"
 
 const pageSizes = [10, 20, 50, 100] as const
 const schemaSampleSizes = [50, 100, 250, 500, 1_000] as const
+const environmentOptions: Array<{ value: ConnectionEnvironment; label: string }> = [
+  { value: "unlabeled", label: "Unlabeled" },
+  { value: "local", label: "Local" },
+  { value: "development", label: "Development" },
+  { value: "staging", label: "Staging" },
+  { value: "production", label: "Production" },
+]
 const integerFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 })
 const sortPresets = [
   { label: "Natural order", value: "{}" },
@@ -200,6 +212,20 @@ function AgentAccessBadge({ mode }: { mode: AgentAccessMode }) {
       {label}
     </span>
   )
+}
+
+function EnvironmentMarker({ environment }: { environment: ConnectionEnvironment }) {
+  const label = environmentOptions.find((option) => option.value === environment)?.label ?? "Unlabeled"
+  const color = environment === "production"
+    ? "border-danger bg-danger"
+    : environment === "staging"
+      ? "border-warning bg-warning"
+      : environment === "development"
+        ? "border-bson-number bg-bson-number"
+        : environment === "local"
+          ? "border-accent bg-accent"
+          : "border-line-strong bg-line-strong"
+  return <span role="img" title={label} aria-label={`${label} environment`} className={`inline-block size-2.5 shrink-0 rounded-full border ${color}`} />
 }
 
 function UpdateControl({ status, onAction }: { status: UpdateStatus | null; onAction: () => void }) {
@@ -526,6 +552,8 @@ function ReportsPanel({ report, loading, error, sampleSize, onSampleSizeChange, 
 function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (connection: SavedConnection) => void }) {
   const [name, setName] = useState("")
   const [uri, setUri] = useState("")
+  const [environment, setEnvironment] = useState<ConnectionEnvironment>("unlabeled")
+  const [connectionAccessMode, setConnectionAccessMode] = useState<ConnectionAccessMode>("read-only")
   const [agentAccessMode, setAgentAccessMode] = useState<AgentAccessMode>("read-only")
   const [favorite, setFavorite] = useState(false)
   const [error, setError] = useState("")
@@ -547,7 +575,7 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setError("")
     try {
       if (!window.mongoPilot) throw new Error("Connection storage is available in the Mongo Pilot desktop app.")
-      const input: SaveConnectionInput = { name: name.trim() || "MongoDB deployment", uri, agentAccessMode, favorite }
+      const input: SaveConnectionInput = { name: name.trim() || "MongoDB deployment", uri, environment, connectionAccessMode, agentAccessMode, favorite }
       onSaved(await window.mongoPilot.connections.save(input))
       onClose()
     } catch (reason) {
@@ -564,7 +592,7 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
         role="dialog"
         aria-modal="true"
         aria-labelledby="connection-title"
-        className="relative z-10 w-full max-w-xl overflow-hidden rounded-xl border border-line-strong bg-panel shadow-2xl shadow-canvas/60"
+        className="scrollbar-thin relative z-10 max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto rounded-xl border border-line-strong bg-panel shadow-2xl shadow-canvas/60"
       >
         <header className="flex items-start justify-between border-b border-line px-6 py-5">
           <div>
@@ -604,6 +632,24 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
             <p id="connection-hint" className="text-xs text-muted">Any connection string accepted by the MongoDB driver is supported. Credentials are encrypted with your operating system keychain.</p>
             {error && <p id="connection-error" role="alert" className="text-sm text-danger">{error}</p>}
           </div>
+          <div className="space-y-2">
+            <label htmlFor="connection-environment" className="block text-xs font-medium">Environment label</label>
+            <CustomSelect id="connection-environment" ariaLabel="Connection environment" value={environment} options={environmentOptions} onChange={setEnvironment} className="w-full" buttonClassName="h-11 px-3 text-sm" menuClassName="w-full" />
+            <p className="text-xs text-muted">Shown throughout the workspace to make production and non-production connections easy to distinguish.</p>
+          </div>
+          <fieldset className="space-y-2">
+            <legend className="text-xs font-medium">Connection safety</legend>
+            <div className="grid grid-cols-2 gap-2">
+              {(["read-only", "read-write"] as const).map((mode) => (
+                <label key={mode} className={`flex min-h-20 cursor-pointer flex-col justify-between rounded-md border p-3 transition-[border-color,background-color] duration-150 ease-product ${connectionAccessMode === mode ? "border-accent bg-accent-soft" : "border-line bg-canvas hover:border-line-strong"}`}>
+                  <input className="sr-only" type="radio" name="connection-access-mode" value={mode} checked={connectionAccessMode === mode} onChange={() => setConnectionAccessMode(mode)} />
+                  {mode === "read-only" ? <Lock size={18} className={connectionAccessMode === mode ? "text-accent" : "text-muted"} aria-hidden="true" /> : <LockOpen size={18} className={connectionAccessMode === mode ? "text-accent" : "text-muted"} aria-hidden="true" />}
+                  <span className="text-xs font-medium capitalize">{mode.replace("-", " ")}</span>
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-muted">Mongo Pilot blocks its write paths in read-only mode. For server-enforced protection, connect with a MongoDB user assigned the read role.</p>
+          </fieldset>
           <fieldset className="space-y-2">
             <legend className="text-xs font-medium">Agent access</legend>
             <div className="grid grid-cols-2 gap-2">
@@ -615,7 +661,7 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
                 </label>
               ))}
             </div>
-            <p className="text-xs text-muted">This mode only limits Pilot. You can always attempt direct edits in Mongo Pilot; MongoDB user roles remain authoritative.</p>
+            <p className="text-xs text-muted">This independently limits Pilot. The agent cannot write while connection safety is read only.</p>
           </fieldset>
           <label className="flex min-h-10 cursor-pointer items-center gap-3 text-xs text-muted">
             <input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} className="size-4 accent-accent" />
@@ -644,10 +690,12 @@ function CopilotPanel({
     connectionId?: string
     connectionName: string
     connectionHost?: string
+    connectionEnvironment?: ConnectionEnvironment
+    connectionAccessMode?: ConnectionAccessMode
     database: string
     collection: string
     agentAccessMode: AgentAccessMode
-    availableConnections: Array<{ name: string; host: string; agentAccessMode: AgentAccessMode; favorite: boolean }>
+    availableConnections: Array<{ name: string; host: string; environment: ConnectionEnvironment; connectionAccessMode: ConnectionAccessMode; agentAccessMode: AgentAccessMode; favorite: boolean }>
   }
   canWrite: boolean
   onModeChange: (mode: AgentAccessMode) => void
@@ -1143,6 +1191,33 @@ export default function App() {
     }
   }
 
+  async function updateConnectionSettings(
+    connection: SavedConnection,
+    next: { environment?: ConnectionEnvironment; connectionAccessMode?: ConnectionAccessMode },
+  ): Promise<void> {
+    if (!window.mongoPilot) return
+    const environment = next.environment ?? connection.environment
+    const connectionAccessMode = next.connectionAccessMode ?? connection.connectionAccessMode
+    try {
+      const updated = await window.mongoPilot.connections.updateSettings({ id: connection.id, environment, connectionAccessMode })
+      setConnections((current) => current.map((item) => item.id === updated.id ? updated : item))
+      if (activeConnection?.id === updated.id) {
+        setActiveConnection(updated)
+        if (updated.connectionAccessMode === "read-only") {
+          setAgentMode("read-only")
+          setEditingDocumentId(null)
+          setPendingDeleteDocumentId(null)
+        }
+      }
+      const message = next.environment
+        ? `${updated.name} is labeled ${environmentOptions.find((option) => option.value === environment)?.label ?? environment}.`
+        : `${updated.name} is now ${connectionAccessMode === "read-only" ? "read only" : "read / write"}.`
+      showConnectionNotice(message)
+    } catch (reason) {
+      showConnectionNotice(reason instanceof Error ? reason.message : "Could not update connection settings.", true)
+    }
+  }
+
   async function removeConnection(connection: SavedConnection): Promise<void> {
     setRemovingConnectionId(connection.id)
     try {
@@ -1530,14 +1605,17 @@ export default function App() {
     localStorage.setItem(preferenceKey(connectionId, database, collection), JSON.stringify(preferences))
   }
 
+  const effectiveAgentMode: AgentAccessMode = activeConnection?.connectionAccessMode === "read-only" ? "read-only" : agentMode
   const context = {
     connectionId: activeConnection?.id,
     connectionName: activeConnection?.name ?? "No active connection",
     connectionHost: activeConnection?.host,
+    connectionEnvironment: activeConnection?.environment,
+    connectionAccessMode: activeConnection?.connectionAccessMode,
     database: activeConnection ? selectedDatabase : "",
     collection: activeConnection ? selectedCollection : "",
-    agentAccessMode: agentMode,
-    availableConnections: connections.map(({ name, host, agentAccessMode, favorite }) => ({ name, host, agentAccessMode, favorite })),
+    agentAccessMode: effectiveAgentMode,
+    availableConnections: connections.map(({ name, host, environment, connectionAccessMode, agentAccessMode, favorite }) => ({ name, host, environment, connectionAccessMode, agentAccessMode, favorite })),
   }
   const activeSortPreset = sortPresets.some((preset) => preset.value === sort) ? sort : "custom"
 
@@ -1580,9 +1658,9 @@ export default function App() {
                 }}
               >
                 <legend className="sr-only">{connection.name} connection</legend>
-                <button type="button" disabled={connectingConnectionId !== null} aria-busy={connectingConnectionId === connection.id} onClick={() => void connect(connection)} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 py-1 pl-3 pr-11 text-left text-xs transition-[background-color,border-color,opacity] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-60 ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
+                <button type="button" disabled={connectingConnectionId !== null} aria-busy={connectingConnectionId === connection.id} onClick={() => void connect(connection)} className={`flex min-h-14 w-full items-center gap-2.5 border-l-2 py-1.5 pl-3 pr-11 text-left text-xs transition-[background-color,border-color,opacity] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-60 ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
                   <HardDrives size={17} className="shrink-0 text-muted" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium">{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connectingConnectionId === connection.id ? "Connecting..." : connection.host}</span></span>
+                  <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium"><EnvironmentMarker environment={connection.environment} />{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connectingConnectionId === connection.id ? "Connecting..." : connection.host}{connection.connectionAccessMode === "read-only" ? " · locked" : ""}</span></span>
                 </button>
                 <button
                   type="button"
@@ -1644,7 +1722,13 @@ export default function App() {
             ) : (
               <span className="text-xs font-medium">MongoDB workspace</span>
             )}
-            {activeConnection && <div className="ml-auto"><AgentAccessBadge mode={context.agentAccessMode} /></div>}
+            {activeConnection && (
+              <div className="ml-auto flex items-center gap-2">
+                <CustomSelect ariaLabel={`Connection environment: ${environmentOptions.find((option) => option.value === activeConnection.environment)?.label ?? "Unlabeled"}`} value={activeConnection.environment} options={environmentOptions} selectedContent={<EnvironmentMarker environment={activeConnection.environment} />} onChange={(environment) => void updateConnectionSettings(activeConnection, { environment })} align="end" className="w-12" buttonClassName="h-10 px-2" menuClassName="w-40" />
+                <CustomSelect ariaLabel="Connection safety" value={activeConnection.connectionAccessMode} options={[{ value: "read-only" as const, label: "Read only" }, { value: "read-write" as const, label: "Read / write" }]} onChange={(connectionAccessMode) => void updateConnectionSettings(activeConnection, { connectionAccessMode })} align="end" className="w-28" buttonClassName="h-10 px-2 font-mono text-[9px] uppercase" menuClassName="w-36" />
+                <AgentAccessBadge mode={context.agentAccessMode} />
+              </div>
+            )}
           </header>
           {!activeConnection ? (
             <div className="grid flex-1 place-items-center p-8">
@@ -1658,9 +1742,9 @@ export default function App() {
             </div>
           ) : (
             <>
-              <nav aria-label="Collection views" className="flex h-11 shrink-0 items-end gap-5 border-b border-line px-4">
-                {(["Documents", "Aggregations", "Schema", "Indexes", "Reports", "Visualizations"] as const).map((tab) => (
-                  <button key={tab} type="button" disabled={!selectedCollection} onClick={() => selectCollectionTab(tab)} className={`h-11 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${activeCollectionTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
+              <nav aria-label="Collection views" className="scrollbar-thin flex h-11 shrink-0 items-end gap-5 overflow-x-auto border-b border-line px-4">
+                {(["Documents", "Aggregations", "Schema", "Indexes", "Reports", "Visualizations", "Shell"] as const).map((tab) => (
+                  <button key={tab} type="button" disabled={tab === "Shell" ? !selectedDatabase : !selectedCollection} onClick={() => selectCollectionTab(tab)} className={`h-11 shrink-0 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${activeCollectionTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
                 ))}
               </nav>
               {activeCollectionTab === "Documents" ? <>
@@ -1731,10 +1815,10 @@ export default function App() {
                             <button type="button" aria-label="Copy document" title="Copy" onClick={() => void copyDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
                               {copiedDocumentId === row.id ? <Check size={13} weight="bold" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
                             </button>
-                            <button type="button" aria-label="Edit document" title="Edit" disabled={mutatingDocumentId === row.id} onClick={() => editDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
+                            <button type="button" aria-label="Edit document" title={activeConnection.connectionAccessMode === "read-only" ? "Connection is read only" : "Edit"} disabled={mutatingDocumentId === row.id || activeConnection.connectionAccessMode === "read-only"} onClick={() => editDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-35">
                               <PencilSimple size={13} aria-hidden="true" />
                             </button>
-                            <button type="button" aria-label="Delete document" title="Delete" disabled={mutatingDocumentId === row.id} onClick={() => requestDeleteDocument(row.id)} className="grid size-7 place-items-center rounded text-muted hover:bg-danger/15 hover:text-danger focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
+                            <button type="button" aria-label="Delete document" title={activeConnection.connectionAccessMode === "read-only" ? "Connection is read only" : "Delete"} disabled={mutatingDocumentId === row.id || activeConnection.connectionAccessMode === "read-only"} onClick={() => requestDeleteDocument(row.id)} className="grid size-7 place-items-center rounded text-muted hover:bg-danger/15 hover:text-danger focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-35">
                               <Trash size={13} aria-hidden="true" />
                             </button>
                           </div>
@@ -1791,7 +1875,7 @@ export default function App() {
                   }}
                    onGenerate={() => void generateReport()}
                  />
-              ) : (
+              ) : activeCollectionTab === "Visualizations" ? (
                 <VisualizationPanel
                   prompt={visualizationPrompt}
                   result={visualizationResult}
@@ -1802,6 +1886,8 @@ export default function App() {
                   onGenerate={() => void generateVisualization()}
                   onRefresh={() => void refreshVisualization()}
                 />
+              ) : (
+                <ShellPanel connectionId={activeConnection.id} database={selectedDatabase} accessMode={activeConnection.connectionAccessMode} />
               )}
             </>
           )}
@@ -1810,7 +1896,7 @@ export default function App() {
         <CopilotPanel
           status={copilotStatus}
           context={context}
-          canWrite={activeConnection?.agentAccessMode === "read-write"}
+          canWrite={activeConnection?.connectionAccessMode === "read-write" && activeConnection.agentAccessMode === "read-write"}
           onModeChange={setAgentMode}
         />
         <PanelResizeHandle

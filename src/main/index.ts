@@ -1,7 +1,7 @@
 import { join } from "node:path"
 import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron"
 import icon from "../../resources/icon.png?asset"
-import type { AggregateInput, CollectionReportInput, CollectionTargetInput, DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
+import type { AggregateInput, CollectionReportInput, CollectionTargetInput, DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
 import { MongoService } from "./mongo-service"
 import { MongoMcpServer } from "./mongo-mcp-server"
@@ -56,6 +56,7 @@ function createWindow(): BrowserWindow {
 function registerIpc(store: ConnectionStore): void {
   ipcMain.handle("connections:list", () => store.list())
   ipcMain.handle("connections:save", (_event, input: SaveConnectionInput) => store.save(input))
+  ipcMain.handle("connections:updateSettings", (_event, input: UpdateConnectionSettingsInput) => mongo.updateConnectionSettings(input))
   ipcMain.handle("connections:remove", async (_event, id: string) => {
     await mongo.disconnect(id)
     await store.remove(id)
@@ -78,6 +79,11 @@ function registerIpc(store: ConnectionStore): void {
   ipcMain.handle("database:generateReport", (_event, input: CollectionReportInput) => mongo.generateReport(input))
   ipcMain.handle("database:replaceDocument", (_event, input: ReplaceDocumentInput) => mongo.replaceDocument(input))
   ipcMain.handle("database:deleteDocument", (_event, input: DocumentTargetInput) => mongo.deleteDocument(input))
+  ipcMain.handle("shell:start", (_event, input: ShellStartInput) => mongo.startShell(input))
+  ipcMain.handle("shell:evaluate", (_event, input: ShellEvaluateInput) => mongo.evaluateShell(input))
+  ipcMain.handle("shell:complete", (_event, input: ShellCompletionInput) => mongo.completeShell(input))
+  ipcMain.handle("shell:interrupt", (_event, connectionId: string) => mongo.interruptShell(connectionId))
+  ipcMain.handle("shell:close", (_event, connectionId: string) => mongo.closeShell(connectionId))
   ipcMain.handle("copilot:status", () => copilot.status())
   ipcMain.handle("copilot:start", () => copilot.start())
   ipcMain.handle("copilot:stop", () => copilot.stop())

@@ -1,9 +1,13 @@
 export type AgentAccessMode = "read-only" | "read-write"
+export type ConnectionAccessMode = "read-only" | "read-write"
+export type ConnectionEnvironment = "unlabeled" | "local" | "development" | "staging" | "production"
 
 export interface SavedConnection {
   id: string
   name: string
   host: string
+  environment: ConnectionEnvironment
+  connectionAccessMode: ConnectionAccessMode
   agentAccessMode: AgentAccessMode
   favorite: boolean
   createdAt: string
@@ -14,8 +18,37 @@ export interface SaveConnectionInput {
   id?: string
   name: string
   uri: string
+  environment: ConnectionEnvironment
+  connectionAccessMode: ConnectionAccessMode
   agentAccessMode: AgentAccessMode
   favorite: boolean
+}
+
+export interface UpdateConnectionSettingsInput {
+  id: string
+  environment: ConnectionEnvironment
+  connectionAccessMode: ConnectionAccessMode
+}
+
+export interface ShellStartInput {
+  connectionId: string
+  database: string
+}
+
+export interface ShellEvaluateInput {
+  connectionId: string
+  code: string
+}
+
+export interface ShellResult {
+  output: string[]
+  prompt: string
+  clearRequested: boolean
+}
+
+export interface ShellCompletionInput {
+  connectionId: string
+  code: string
 }
 
 export interface ConnectionResult {
@@ -171,12 +204,16 @@ export interface CopilotPromptInput {
     connectionId?: string
     connectionName?: string
     connectionHost?: string
+    connectionEnvironment?: ConnectionEnvironment
+    connectionAccessMode?: ConnectionAccessMode
     database?: string
     collection?: string
     agentAccessMode?: AgentAccessMode
     availableConnections?: Array<{
       name: string
       host: string
+      environment: ConnectionEnvironment
+      connectionAccessMode: ConnectionAccessMode
       agentAccessMode: AgentAccessMode
       favorite: boolean
     }>
@@ -221,6 +258,7 @@ export interface MongoPilotApi {
   connections: {
     list(): Promise<SavedConnection[]>
     save(input: SaveConnectionInput): Promise<SavedConnection>
+    updateSettings(input: UpdateConnectionSettingsInput): Promise<SavedConnection>
     remove(id: string): Promise<void>
     copyUri(id: string): Promise<void>
     connect(id: string): Promise<ConnectionResult>
@@ -237,6 +275,13 @@ export interface MongoPilotApi {
     generateReport(input: CollectionReportInput): Promise<CollectionReportResult>
     replaceDocument(input: ReplaceDocumentInput): Promise<void>
     deleteDocument(input: DocumentTargetInput): Promise<void>
+  }
+  shell: {
+    start(input: ShellStartInput): Promise<{ prompt: string }>
+    evaluate(input: ShellEvaluateInput): Promise<ShellResult>
+    complete(input: ShellCompletionInput): Promise<string[]>
+    interrupt(connectionId: string): Promise<boolean>
+    close(connectionId: string): Promise<void>
   }
   copilot: {
     status(): Promise<CopilotStatus>

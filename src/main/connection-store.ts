@@ -3,15 +3,25 @@ import { readFile, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { mkdir } from "node:fs/promises"
 import { safeStorage } from "electron"
-import type { AgentAccessMode, SaveConnectionInput, SavedConnection } from "../shared/types"
+import type { AgentAccessMode, ConnectionAccessMode, ConnectionEnvironment, SaveConnectionInput, SavedConnection, UpdateConnectionSettingsInput } from "../shared/types"
 
 interface StoredConnection extends SavedConnection {
   encryptedUri: string
 }
 
-type PersistedConnection = Omit<StoredConnection, "agentAccessMode"> & {
+type PersistedConnection = Omit<StoredConnection, "agentAccessMode" | "connectionAccessMode" | "environment"> & {
   agentAccessMode?: AgentAccessMode
+  connectionAccessMode?: ConnectionAccessMode
+  environment?: ConnectionEnvironment
   accessMode?: AgentAccessMode | "write-only"
+}
+
+function isEnvironment(value: unknown): value is ConnectionEnvironment {
+  return value === "unlabeled" || value === "local" || value === "development" || value === "staging" || value === "production"
+}
+
+function isConnectionAccessMode(value: unknown): value is ConnectionAccessMode {
+  return value === "read-only" || value === "read-write"
 }
 
 export class ConnectionStore {
@@ -25,6 +35,9 @@ export class ConnectionStore {
     if (!safeStorage.isEncryptionAvailable()) {
       throw new Error("Secure credential storage is unavailable on this system.")
     }
+    if (!isEnvironment(input.environment) || !isConnectionAccessMode(input.connectionAccessMode)) {
+      throw new Error("Invalid connection environment or safety mode.")
+    }
 
     const records = await this.read()
     const existing = input.id ? records.find((item) => item.id === input.id) : undefined
@@ -32,6 +45,8 @@ export class ConnectionStore {
       id: existing?.id ?? randomUUID(),
       name: input.name.trim(),
       host: this.hostFromUri(input.uri),
+      environment: input.environment,
+      connectionAccessMode: input.connectionAccessMode,
       agentAccessMode: input.agentAccessMode,
       favorite: input.favorite,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
@@ -44,6 +59,20 @@ export class ConnectionStore {
     await this.write(next)
     const { encryptedUri: _encryptedUri, ...saved } = record
     return saved
+  }
+
+  async updateSettings(input: UpdateConnectionSettingsInput): Promise<SavedConnection> {
+    if (!isEnvironment(input.environment) || !isConnectionAccessMode(input.connectionAccessMode)) {
+      throw new Error("Invalid connection environment or safety mode.")
+    }
+    const records = await this.read()
+    const target = records.find((item) => item.id === input.id)
+    if (!target) throw new Error("Saved connection not found.")
+    target.environment = input.environment
+    target.connectionAccessMode = input.connectionAccessMode
+    await this.write(records)
+    const { encryptedUri: _encryptedUri, ...connection } = target
+    return connection
   }
 
   async remove(id: string): Promise<void> {
@@ -84,7 +113,14 @@ export class ConnectionStore {
         const legacyMode = record.accessMode === "write-only" ? "read-write" : record.accessMode
         const agentAccessMode = record.agentAccessMode ?? legacyMode ?? "read-only"
         const { accessMode: _legacyAccessMode, ...current } = record
-        return { ...current, agentAccessMode }
+        return {
+          ...current,
+          agentAccessMode,
+          connectionAccessMode: isConnectionAccessMode(record.connectionAccessMode)
+            ? record.connectionAccessMode
+            : record.connectionAccessMode === undefined ? "read-write" : "read-only",
+          environment: isEnvironment(record.environment) ? record.environment : "unlabeled",
+        }
       })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return []

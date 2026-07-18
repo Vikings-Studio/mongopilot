@@ -157,7 +157,7 @@ export class OpencodeService {
     const hasMongoGrant = Boolean(connectionId && mode)
     const savedConnections = context?.availableConnections ?? []
     const savedConnectionContext = savedConnections.length
-      ? `Saved connections available: ${savedConnections.map((connection) => `${connection.name} (${connection.host}, maximum agent access: ${connection.agentAccessMode}${connection.favorite ? ", favorite" : ""})`).join("; ")}.`
+      ? `Saved connections available: ${savedConnections.map((connection) => `${connection.name} (${connection.host}, environment: ${connection.environment}, connection safety: ${connection.connectionAccessMode}, maximum agent access: ${connection.agentAccessMode}${connection.favorite ? ", favorite" : ""})`).join("; ")}.`
       : "There are no saved MongoDB connections."
     const system = [
       "You are the copilot inside Mongo Pilot, a MongoDB desktop application.",
@@ -168,6 +168,8 @@ export class OpencodeService {
       context?.agentAccessMode ? `The active agent access mode is ${context.agentAccessMode}. Respect it for every tool call.` : "",
       context?.connectionName ? `Active connection: ${context.connectionName}.` : "",
       context?.connectionHost ? `Active host: ${context.connectionHost}.` : "",
+      context?.connectionEnvironment ? `Active environment label: ${context.connectionEnvironment}.` : "",
+      context?.connectionAccessMode ? `Active connection safety mode: ${context.connectionAccessMode}.` : "",
       context?.database ? `Active database: ${context.database}.` : "",
       context?.collection ? `Active collection: ${context.collection}.` : "",
     ].filter(Boolean).join("\n")

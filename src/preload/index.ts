@@ -1,10 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron"
-import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, UpdateStatus, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
+import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, UpdateStatus, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
 
 const api: MongoPilotApi = {
   connections: {
     list: () => ipcRenderer.invoke("connections:list"),
     save: (input: SaveConnectionInput) => ipcRenderer.invoke("connections:save", input),
+    updateSettings: (input: UpdateConnectionSettingsInput) => ipcRenderer.invoke("connections:updateSettings", input),
     remove: (id: string) => ipcRenderer.invoke("connections:remove", id),
     copyUri: (id: string) => ipcRenderer.invoke("connections:copyUri", id),
     connect: (id: string) => ipcRenderer.invoke("connections:connect", id),
@@ -22,6 +23,13 @@ const api: MongoPilotApi = {
     generateReport: (input: CollectionReportInput) => ipcRenderer.invoke("database:generateReport", input),
     replaceDocument: (input: ReplaceDocumentInput) => ipcRenderer.invoke("database:replaceDocument", input),
     deleteDocument: (input: DocumentTargetInput) => ipcRenderer.invoke("database:deleteDocument", input),
+  },
+  shell: {
+    start: (input: ShellStartInput) => ipcRenderer.invoke("shell:start", input),
+    evaluate: (input: ShellEvaluateInput) => ipcRenderer.invoke("shell:evaluate", input),
+    complete: (input: ShellCompletionInput) => ipcRenderer.invoke("shell:complete", input),
+    interrupt: (connectionId: string) => ipcRenderer.invoke("shell:interrupt", connectionId),
+    close: (connectionId: string) => ipcRenderer.invoke("shell:close", connectionId),
   },
   copilot: {
     status: () => ipcRenderer.invoke("copilot:status"),

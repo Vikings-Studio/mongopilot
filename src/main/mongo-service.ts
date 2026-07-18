@@ -1,5 +1,7 @@
+import { createRequire } from "node:module"
+import { inspect, stripVTControlCharacters } from "node:util"
 import { MongoClient, type Document, type Filter, type Sort, type UpdateFilter } from "mongodb"
-import type { AgentAccessMode, AggregateInput, AggregateResult, CollectionIndexInfo, CollectionInfo, CollectionReportInput, CollectionReportResult, CollectionTargetInput, DatabaseInfo, DocumentTargetInput, FindInput, FindResult, ReplaceDocumentInput, SavedConnection, SchemaAnalysisInput, SchemaAnalysisResult, VisualizationResult, VisualizationSpec } from "../shared/types"
+import type { AgentAccessMode, AggregateInput, AggregateResult, CollectionIndexInfo, CollectionInfo, CollectionReportInput, CollectionReportResult, CollectionTargetInput, DatabaseInfo, DocumentTargetInput, FindInput, FindResult, ReplaceDocumentInput, SavedConnection, SchemaAnalysisInput, SchemaAnalysisResult, ShellCompletionInput, ShellEvaluateInput, ShellResult, ShellStartInput, UpdateConnectionSettingsInput, VisualizationResult, VisualizationSpec } from "../shared/types"
 import { parseAggregationPipeline } from "./aggregation-pipeline"
 import { parseExtendedJson, serializeBson, serializeBsonArray, stringifyCanonicalExtendedJson, stringifyMongoDocument } from "./bson-serialization"
 import type { ConnectionStore } from "./connection-store"
@@ -12,8 +14,49 @@ interface ActiveConnection {
   connection: SavedConnection
 }
 
+interface MongoshEvaluationResult {
+  printable: unknown
+}
+
+interface MongoshCompletion {
+  completion: string
+}
+
+interface MongoshRuntime {
+  evaluate(code: string): Promise<MongoshEvaluationResult>
+  getCompletions(code: string): Promise<MongoshCompletion[]>
+  getShellPrompt(): Promise<string>
+  setEvaluationListener(listener: {
+    onPrint?: (results: MongoshEvaluationResult[]) => void
+    onClearCommand?: () => void
+  }): unknown
+  interrupt(): Promise<boolean>
+  terminate(): Promise<void>
+  waitForRuntimeToBeReady(): Promise<void>
+}
+
+interface MongoshRuntimeConstructor {
+  new(uri: string, driverOptions: Record<string, never>): MongoshRuntime
+}
+
+interface ShellSession {
+  runtime: MongoshRuntime
+  printed: string[]
+  printedLength: number
+  outputTruncated: boolean
+  clearRequested: boolean
+}
+
+const require = createRequire(import.meta.url)
+const WebWorker = require("web-worker") as unknown
+if (typeof Reflect.get(globalThis, "Worker") !== "function") Object.defineProperty(globalThis, "Worker", { configurable: true, value: WebWorker })
+const { WorkerRuntime } = require("@mongosh/node-runtime-worker-thread") as { WorkerRuntime: MongoshRuntimeConstructor }
+const shellInputLimit = 256 * 1024
+const shellOutputLimit = 512 * 1024
+
 export class MongoService {
   private readonly active = new Map<string, ActiveConnection>()
+  private readonly shells = new Map<string, ShellSession>()
 
   constructor(private readonly store: ConnectionStore) {}
 
@@ -39,6 +82,7 @@ export class MongoService {
   }
 
   async disconnect(id: string): Promise<void> {
+    await this.closeShell(id)
     const existing = this.active.get(id)
     if (existing) await existing.client.close()
     this.active.delete(id)
@@ -46,6 +90,86 @@ export class MongoService {
 
   async disconnectAll(): Promise<void> {
     await Promise.all([...this.active.keys()].map((id) => this.disconnect(id)))
+  }
+
+  async updateConnectionSettings(input: UpdateConnectionSettingsInput): Promise<SavedConnection> {
+    const connection = await this.store.updateSettings(input)
+    const active = this.active.get(input.id)
+    if (active) active.connection = connection
+    if (connection.connectionAccessMode === "read-only") await this.closeShell(input.id)
+    return connection
+  }
+
+  async startShell(input: ShellStartInput): Promise<{ prompt: string }> {
+    this.requireWrite(input.connectionId)
+    let session = this.shells.get(input.connectionId)
+    if (!session) {
+      const runtime = new WorkerRuntime(await this.store.getUri(input.connectionId), {})
+      session = { runtime, printed: [], printedLength: 0, outputTruncated: false, clearRequested: false }
+      runtime.setEvaluationListener({
+        onPrint: (results) => {
+          if (!session) return
+          for (const result of results) this.captureShellPrint(session, result.printable)
+        },
+        onClearCommand: () => {
+          if (session) session.clearRequested = true
+        },
+      })
+      this.shells.set(input.connectionId, session)
+      try {
+        await runtime.waitForRuntimeToBeReady()
+      } catch (error) {
+        this.shells.delete(input.connectionId)
+        await runtime.terminate()
+        throw error
+      }
+    }
+    if (input.database.trim()) {
+      await session.runtime.evaluate(`use(${JSON.stringify(input.database)})`)
+      session.printed = []
+      session.printedLength = 0
+      session.outputTruncated = false
+      session.clearRequested = false
+    }
+    return { prompt: await session.runtime.getShellPrompt() }
+  }
+
+  async evaluateShell(input: ShellEvaluateInput): Promise<ShellResult> {
+    this.requireWrite(input.connectionId)
+    if (!input.code.trim()) throw new Error("Enter a mongosh command.")
+    if (input.code.length > shellInputLimit) throw new Error("Shell input must be smaller than 256 KB.")
+    const session = this.requireShell(input.connectionId)
+    session.printed = []
+    session.printedLength = 0
+    session.outputTruncated = false
+    session.clearRequested = false
+    const result = await session.runtime.evaluate(input.code)
+    const output = [...session.printed]
+    if (session.outputTruncated) output.push("[Output truncated at 512 KB]")
+    if (result.printable !== undefined) output.push(this.formatShellValue(result.printable))
+    return {
+      output: this.boundShellOutput(output),
+      prompt: await session.runtime.getShellPrompt(),
+      clearRequested: session.clearRequested,
+    }
+  }
+
+  async completeShell(input: ShellCompletionInput): Promise<string[]> {
+    this.requireWrite(input.connectionId)
+    if (input.code.length > shellInputLimit) throw new Error("Shell input must be smaller than 256 KB.")
+    const completions = await this.requireShell(input.connectionId).runtime.getCompletions(input.code)
+    return completions.slice(0, 100).map(({ completion }) => completion)
+  }
+
+  async interruptShell(connectionId: string): Promise<boolean> {
+    this.requireWrite(connectionId)
+    return this.requireShell(connectionId).runtime.interrupt()
+  }
+
+  async closeShell(connectionId: string): Promise<void> {
+    const session = this.shells.get(connectionId)
+    this.shells.delete(connectionId)
+    if (session) await session.runtime.terminate()
   }
 
   async listCollections(connectionId: string, database: string): Promise<CollectionInfo[]> {
@@ -173,7 +297,7 @@ export class MongoService {
   }
 
   async replaceDocument(input: ReplaceDocumentInput): Promise<void> {
-    const active = this.requireActive(input.connectionId)
+    const active = this.requireWrite(input.connectionId)
     if (input.document.length > 10 * 1024 * 1024) throw new Error("Document must be smaller than 10 MB.")
     const id = parseExtendedJson(input.id)
     const document = parseExtendedJson(input.document)
@@ -184,14 +308,15 @@ export class MongoService {
   }
 
   async deleteDocument(input: DocumentTargetInput): Promise<void> {
-    const active = this.requireActive(input.connectionId)
+    const active = this.requireWrite(input.connectionId)
     const id = parseExtendedJson(input.id)
     const result = await active.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>)
     if (result.deletedCount === 0) throw new Error("Document no longer exists.")
   }
 
   getAgentAccessMode(connectionId: string): AgentAccessMode {
-    return this.requireActive(connectionId).connection.agentAccessMode
+    const { connection } = this.requireActive(connectionId)
+    return connection.connectionAccessMode === "read-only" ? "read-only" : connection.agentAccessMode
   }
 
   async agentListDatabases(connectionId: string): Promise<DatabaseInfo[]> {
@@ -254,11 +379,60 @@ export class MongoService {
   }
 
   private requireAgentWrite(id: string): ActiveConnection {
-    const active = this.requireActive(id)
+    const active = this.requireWrite(id)
     if (active.connection.agentAccessMode === "read-only") {
       throw new Error("This connection only grants read access to the agent.")
     }
     return active
+  }
+
+  private requireWrite(id: string): ActiveConnection {
+    const active = this.requireActive(id)
+    if (active.connection.connectionAccessMode === "read-only") {
+      throw new Error("This connection is locked to read-only mode in Mongo Pilot.")
+    }
+    return active
+  }
+
+  private requireShell(id: string): ShellSession {
+    const session = this.shells.get(id)
+    if (!session) throw new Error("Open the shell before running a command.")
+    return session
+  }
+
+  private formatShellValue(value: unknown): string {
+    const formatted = typeof value === "string"
+      ? value
+      : inspect(value, { colors: false, depth: 12, maxArrayLength: 1_000, maxStringLength: shellOutputLimit, breakLength: 100 })
+    return stripVTControlCharacters(formatted)
+  }
+
+  private captureShellPrint(session: ShellSession, value: unknown): void {
+    if (session.outputTruncated) return
+    const formatted = this.formatShellValue(value)
+    const remaining = shellOutputLimit - session.printedLength
+    if (remaining <= 0) {
+      session.outputTruncated = true
+      return
+    }
+    session.printed.push(formatted.slice(0, remaining))
+    session.printedLength += Math.min(formatted.length, remaining)
+    if (formatted.length > remaining) session.outputTruncated = true
+  }
+
+  private boundShellOutput(output: string[]): string[] {
+    let remaining = shellOutputLimit
+    let total = 0
+    const bounded: string[] = []
+    for (const value of output) {
+      total += value.length
+      if (remaining <= 0) break
+      const next = value.slice(0, remaining)
+      bounded.push(next)
+      remaining -= next.length
+    }
+    if (total > shellOutputLimit || output.length > bounded.length) bounded.push("[Output truncated at 512 KB]")
+    return bounded
   }
 
   private requireActive(id: string): ActiveConnection {

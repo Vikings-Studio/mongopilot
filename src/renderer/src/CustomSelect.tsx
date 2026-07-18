@@ -1,4 +1,5 @@
 import { CaretDown, Check } from "@phosphor-icons/react"
+import type { ReactNode } from "react"
 import { useEffect, useId, useRef, useState } from "react"
 
 export interface CustomSelectOption<T extends string | number> {
@@ -16,6 +17,7 @@ export function CustomSelect<T extends string | number>({
   className = "",
   buttonClassName = "",
   menuClassName = "",
+  selectedContent,
   onChange,
 }: {
   id?: string
@@ -27,6 +29,7 @@ export function CustomSelect<T extends string | number>({
   className?: string
   buttonClassName?: string
   menuClassName?: string
+  selectedContent?: ReactNode
   onChange: (value: T) => void
 }) {
   const generatedId = useId()
@@ -127,7 +130,7 @@ export function CustomSelect<T extends string | number>({
         }}
         className={`flex w-full items-center justify-between gap-2 rounded border border-line bg-canvas px-2 text-left text-muted transition-[border-color,background-color,color] duration-150 ease-product hover:border-line-strong hover:text-ink focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/25 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${buttonClassName}`}
       >
-        <span className="truncate">{selected?.label ?? String(value)}</span>
+        <span className="truncate">{selectedContent ?? selected?.label ?? String(value)}</span>
         <CaretDown size={10} className={`shrink-0 transition-transform duration-150 ${open ? "rotate-180" : ""}`} aria-hidden="true" />
       </button>
       {open && (
