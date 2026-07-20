@@ -1,7 +1,20 @@
 import { contextBridge, ipcRenderer } from "electron"
-import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, UpdateStatus, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
+import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, UpdateStatus, VisualizationGenerateInput, VisualizationRefreshInput, WriteApprovalRequest, WriteApprovalResponse } from "../shared/types"
 
 const api: MongoPilotApi = {
+  writeApprovals: {
+    resolve: (response: WriteApprovalResponse) => ipcRenderer.send("write-approval:resolve", response),
+    onRequest: (callback: (request: WriteApprovalRequest) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, request: WriteApprovalRequest) => callback(request)
+      ipcRenderer.on("write-approval:requested", listener)
+      return () => ipcRenderer.removeListener("write-approval:requested", listener)
+    },
+    onCancelled: (callback: (id: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, id: string) => callback(id)
+      ipcRenderer.on("write-approval:cancelled", listener)
+      return () => ipcRenderer.removeListener("write-approval:cancelled", listener)
+    },
+  },
   connections: {
     list: () => ipcRenderer.invoke("connections:list"),
     save: (input: SaveConnectionInput) => ipcRenderer.invoke("connections:save", input),

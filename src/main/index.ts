@@ -1,16 +1,18 @@
 import { join } from "node:path"
 import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron"
 import icon from "../../resources/icon.png?asset"
-import type { AggregateInput, CollectionReportInput, CollectionTargetInput, DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, VisualizationGenerateInput, VisualizationRefreshInput } from "../shared/types"
+import type { AggregateInput, CollectionReportInput, CollectionTargetInput, DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, VisualizationGenerateInput, VisualizationRefreshInput, WriteApprovalResponse } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
 import { MongoService } from "./mongo-service"
 import { MongoMcpServer } from "./mongo-mcp-server"
 import { OpencodeService } from "./opencode-service"
 import { UpdateService } from "./update-service"
+import { WriteApprovalService } from "./write-approval-service"
 
 let mongo: MongoService
 let copilot: OpencodeService
 let updates: UpdateService
+const writeApprovals = new WriteApprovalService()
 const applicationName = "Mongo Pilot"
 const applicationDescription = "A MongoDB desktop workspace with an embedded OpenCode copilot."
 const applicationAuthor = "Vikings Studio"
@@ -44,7 +46,7 @@ function createWindow(): BrowserWindow {
   })
   window.on("ready-to-show", () => window.show())
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://")) void shell.openExternal(url)
+    if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url)
     return { action: "deny" }
   })
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -54,6 +56,7 @@ function createWindow(): BrowserWindow {
 }
 
 function registerIpc(store: ConnectionStore): void {
+  ipcMain.on("write-approval:resolve", (_event, response: WriteApprovalResponse) => writeApprovals.resolve(response))
   ipcMain.handle("connections:list", () => store.list())
   ipcMain.handle("connections:save", (_event, input: SaveConnectionInput) => store.save(input))
   ipcMain.handle("connections:updateSettings", (_event, input: UpdateConnectionSettingsInput) => mongo.updateConnectionSettings(input))
@@ -111,7 +114,7 @@ void app.whenReady().then(() => {
     window.setResizable(true)
   })
   const store = new ConnectionStore(join(app.getPath("userData"), "connections.json"))
-  mongo = new MongoService(store)
+  mongo = new MongoService(store, writeApprovals)
   copilot = new OpencodeService(new MongoMcpServer(mongo))
   updates = new UpdateService()
   registerIpc(store)
@@ -122,6 +125,7 @@ void app.whenReady().then(() => {
 })
 
 app.on("before-quit", () => {
+  writeApprovals.cancel()
   void mongo?.disconnectAll()
   void copilot.stop()
 })

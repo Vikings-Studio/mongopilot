@@ -36,10 +36,12 @@ jobs:
           npm run test:bson
           npm run test:aggregation
           npm run test:mcp
+          npm run test:namespaces
           npm run test:schema
           npm run test:shell
           npm run test:visualization
           npm run test:visualization-storage
+          npm run test:write-approval
 
       - name: Audit production dependencies
         run: npm audit --omit=dev

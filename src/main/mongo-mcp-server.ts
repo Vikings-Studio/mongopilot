@@ -25,6 +25,7 @@ export type MongoAgentService = Pick<MongoService,
   | "agentInsertOne"
   | "agentUpdateOne"
   | "agentDeleteOne"
+  | "cancelAgentWriteApproval"
 >
 
 export class MongoMcpServer {
@@ -44,9 +45,11 @@ export class MongoMcpServer {
         response.sendStatus(401)
         return
       }
-      const server = this.createServer()
+      const approvalScope = randomBytes(16).toString("base64url")
+      const server = this.createServer(approvalScope)
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
       response.on("close", () => {
+        this.mongo.cancelAgentWriteApproval(approvalScope)
         void transport.close()
         void server.close()
       })
@@ -75,6 +78,7 @@ export class MongoMcpServer {
 
   clearGrant(): void {
     this.grant = undefined
+    this.mongo.cancelAgentWriteApproval()
   }
 
   async stop(): Promise<void> {
@@ -85,7 +89,7 @@ export class MongoMcpServer {
     this.url = undefined
   }
 
-  private createServer(): McpServer {
+  private createServer(approvalScope: string): McpServer {
     const server = new McpServer({ name: "mongo-pilot", version: "0.1.0" })
     server.registerTool("list_databases", { description: "List databases on the authorized MongoDB connection." }, async () =>
       this.result(await this.mongo.agentListDatabases(this.requireRead().connectionId)))
@@ -108,15 +112,15 @@ export class MongoMcpServer {
     server.registerTool("insert_one", {
       description: "Insert one document into an authorized MongoDB collection.",
       inputSchema: { database: z.string().min(1), collection: z.string().min(1), document: documentSchema },
-    }, async ({ database, collection, document }) => this.result(await this.mongo.agentInsertOne(this.requireAgentWrite().connectionId, database, collection, document)))
+    }, async ({ database, collection, document }) => this.result(await this.mongo.agentInsertOne(this.requireAgentWrite().connectionId, database, collection, document, approvalScope)))
     server.registerTool("update_one", {
       description: "Update one document matching a non-empty filter in an authorized MongoDB collection.",
       inputSchema: { database: z.string().min(1), collection: z.string().min(1), filter: documentSchema.refine((value) => Object.keys(value).length > 0), update: documentSchema },
-    }, async ({ database, collection, filter, update }) => this.result(await this.mongo.agentUpdateOne(this.requireAgentWrite().connectionId, database, collection, filter, update)))
+    }, async ({ database, collection, filter, update }) => this.result(await this.mongo.agentUpdateOne(this.requireAgentWrite().connectionId, database, collection, filter, update, approvalScope)))
     server.registerTool("delete_one", {
       description: "Delete one document matching a non-empty filter in an authorized MongoDB collection.",
       inputSchema: { database: z.string().min(1), collection: z.string().min(1), filter: documentSchema.refine((value) => Object.keys(value).length > 0) },
-    }, async ({ database, collection, filter }) => this.result(await this.mongo.agentDeleteOne(this.requireAgentWrite().connectionId, database, collection, filter)))
+    }, async ({ database, collection, filter }) => this.result(await this.mongo.agentDeleteOne(this.requireAgentWrite().connectionId, database, collection, filter, approvalScope)))
     return server
   }
 

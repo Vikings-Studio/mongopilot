@@ -14,6 +14,7 @@ const fakeMongo = {
   agentInsertOne: async () => ({ acknowledged: true }),
   agentUpdateOne: async () => ({ acknowledged: true }),
   agentDeleteOne: async () => ({ acknowledged: true }),
+  cancelAgentWriteApproval: () => undefined,
 } satisfies MongoAgentService
 
 const server = new MongoMcpServer(fakeMongo)

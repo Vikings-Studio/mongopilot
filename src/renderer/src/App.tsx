@@ -51,12 +51,14 @@ import type {
   UpdateStatus,
   VisualizationResult,
   VisualizationSpec,
+  WriteApprovalRequest,
 } from "../../shared/types"
-import { getBsonDisplay, type BsonDisplayKind } from "./bson-format"
+import { getBsonDisplay, isWebUrl, type BsonDisplayKind, type DateDisplayMode } from "./bson-format"
 import { CustomSelect } from "./CustomSelect"
 import { ShellPanel } from "./ShellPanel"
 import { VisualizationPanel } from "./VisualizationPanel"
 import { readSavedVisualization, saveVisualization } from "./visualization-storage"
+import { WriteApprovalDialog } from "./WriteApprovalDialog"
 
 type Message = { id: string; role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
@@ -264,6 +266,7 @@ function UpdateControl({ status, onAction }: { status: UpdateStatus | null; onAc
 
 function JsonPrimitive({ value }: { value: unknown }) {
   if (value === null) return <span className="text-faint">null</span>
+  if (typeof value === "string" && isWebUrl(value)) return <span className="break-all text-bson-string">&quot;<a href={value} target="_blank" rel="noreferrer" className="rounded underline decoration-current/50 underline-offset-2 hover:text-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">{value}</a>&quot;</span>
   if (typeof value === "string") return <span className="break-all text-bson-string">{JSON.stringify(value)}</span>
   if (typeof value === "boolean") return <span className="text-bson-number">{String(value)}</span>
   return <span className="text-bson-number">{String(value)}</span>
@@ -282,9 +285,9 @@ function documentKey(key: string): string {
   return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
 }
 
-function JsonValue({ value, path }: { value: unknown; path: string }) {
+function JsonValue({ value, path, dateMode }: { value: unknown; path: string; dateMode: DateDisplayMode }) {
   const [expanded, setExpanded] = useState(false)
-  const bson = getBsonDisplay(value)
+  const bson = getBsonDisplay(value, dateMode)
   if (bson) return <span className={`break-all ${bsonTextColor[bson.kind]}`}>{bson.text}</span>
   const isArray = Array.isArray(value)
   const isObject = value !== null && typeof value === "object" && !isArray
@@ -314,7 +317,7 @@ function JsonValue({ value, path }: { value: unknown; path: string }) {
           {entries.map(([key, child]) => (
             <span key={`${path}.${key}`} className="block min-h-6 leading-6">
               <span className="font-semibold text-muted">{isArray ? key : documentKey(key)}: </span>
-              <JsonValue value={child} path={`${path}.${key}`} />
+              <JsonValue value={child} path={`${path}.${key}`} dateMode={dateMode} />
             </span>
           ))}
         </span>
@@ -323,16 +326,16 @@ function JsonValue({ value, path }: { value: unknown; path: string }) {
   )
 }
 
-function JsonDocument({ document }: { document: unknown }) {
+function JsonDocument({ document, dateMode = "database" }: { document: unknown; dateMode?: DateDisplayMode }) {
   if (document === null || typeof document !== "object" || Array.isArray(document)) {
-    return <JsonValue value={document} path="document" />
+    return <JsonValue value={document} path="document" dateMode={dateMode} />
   }
   return (
     <div className="min-w-0 font-mono text-xs leading-6">
       {Object.entries(document as Record<string, unknown>).map(([key, value]) => (
         <div key={key} className="min-h-6">
           <span className="font-semibold text-muted">{documentKey(key)}: </span>
-          <JsonValue value={value} path={key} />
+          <JsonValue value={value} path={key} dateMode={dateMode} />
         </div>
       ))}
     </div>
@@ -457,6 +460,7 @@ function AggregationsPanel({
   pipeline,
   limit,
   result,
+  dateMode,
   loading,
   error,
   onPipelineChange,
@@ -466,6 +470,7 @@ function AggregationsPanel({
   pipeline: string
   limit: number
   result: AggregateResult | null
+  dateMode: DateDisplayMode
   loading: boolean
   error: string
   onPipelineChange: (pipeline: string) => void
@@ -498,7 +503,7 @@ function AggregationsPanel({
             {result.documents.map((row, index) => (
               <article key={row.id} className="grid grid-cols-[36px_minmax(0,1fr)] text-xs">
                 <div className="border-r border-line bg-shell py-3 text-center font-mono tabular-nums text-faint">{String(index + 1).padStart(2, "0")}</div>
-                <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3"><JsonDocument document={parseTransportDocument(row.document)} /></div>
+                <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3"><JsonDocument document={parseTransportDocument(row.document)} dateMode={dateMode} /></div>
               </article>
             ))}
           </div>
@@ -1008,7 +1013,8 @@ export default function App() {
   const [editDocumentText, setEditDocumentText] = useState("")
   const [copiedDocumentId, setCopiedDocumentId] = useState<string | null>(null)
   const [mutatingDocumentId, setMutatingDocumentId] = useState<string | null>(null)
-  const [pendingDeleteDocumentId, setPendingDeleteDocumentId] = useState<string | null>(null)
+  const [writeApproval, setWriteApproval] = useState<WriteApprovalRequest | null>(null)
+  const [dateDisplayMode, setDateDisplayMode] = useState<DateDisplayMode>(() => localStorage.getItem("mongo-pilot:date-display") === "local" ? "local" : "database")
   const [connectionMenuId, setConnectionMenuId] = useState<string | null>(null)
   const [connectingConnectionId, setConnectingConnectionId] = useState<string | null>(null)
   const [disconnectingConnection, setDisconnectingConnection] = useState(false)
@@ -1019,7 +1025,6 @@ export default function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [agentMode, setAgentMode] = useState<AgentAccessMode>("read-only")
   const [panelWidths, setPanelWidths] = useState(() => ({ left: readPanelWidth("left"), right: readPanelWidth("right") }))
-  const deleteCancelRef = useRef<HTMLButtonElement>(null)
   const removeCancelRef = useRef<HTMLButtonElement>(null)
   const collectionTargetRef = useRef("")
 
@@ -1051,21 +1056,26 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if ((!pendingDeleteDocumentId && !pendingRemoveConnection) || mutatingDocumentId || removingConnectionId) return
+    if (!window.mongoPilot) return
+    const unsubscribeRequest = window.mongoPilot.writeApprovals.onRequest(setWriteApproval)
+    const unsubscribeCancelled = window.mongoPilot.writeApprovals.onCancelled((id) => {
+      setWriteApproval((current) => current?.id === id ? null : current)
+    })
+    return () => {
+      unsubscribeRequest()
+      unsubscribeCancelled()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!pendingRemoveConnection || removingConnectionId) return
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
-      setPendingDeleteDocumentId(null)
       setPendingRemoveConnection(null)
     }
     window.addEventListener("keydown", closeOnEscape)
     return () => window.removeEventListener("keydown", closeOnEscape)
-  }, [pendingDeleteDocumentId, pendingRemoveConnection, mutatingDocumentId, removingConnectionId])
-
-  useEffect(() => {
-    if (!pendingDeleteDocumentId) return
-    const frame = window.requestAnimationFrame(() => deleteCancelRef.current?.focus())
-    return () => window.cancelAnimationFrame(frame)
-  }, [pendingDeleteDocumentId])
+  }, [pendingRemoveConnection, removingConnectionId])
 
   useEffect(() => {
     if (!pendingRemoveConnection) return
@@ -1160,7 +1170,6 @@ export default function App() {
     setTotal(0)
     setPage(1)
     setEditingDocumentId(null)
-    setPendingDeleteDocumentId(null)
     setAgentMode("read-only")
     setConnectionMenuId(null)
   }
@@ -1206,7 +1215,6 @@ export default function App() {
         if (updated.connectionAccessMode === "read-only") {
           setAgentMode("read-only")
           setEditingDocumentId(null)
-          setPendingDeleteDocumentId(null)
         }
       }
       const message = next.environment
@@ -1339,7 +1347,6 @@ export default function App() {
     setVisualizationLoading(false)
     setVisualizationError("")
     setEditingDocumentId(null)
-    setPendingDeleteDocumentId(null)
     await runQuery({ connectionId, database, collection, filter: "{}", sort: preferences.sort, pageSize: preferences.pageSize, page: 1 })
   }
 
@@ -1562,7 +1569,7 @@ export default function App() {
 
   function requestDeleteDocument(id: string): void {
     setError("")
-    setPendingDeleteDocumentId(id)
+    void deleteDocument(id)
   }
 
   async function deleteDocument(id: string): Promise<void> {
@@ -1576,7 +1583,6 @@ export default function App() {
         collection: selectedCollection,
         id,
       })
-      setPendingDeleteDocumentId(null)
       const nextPage = documents.length === 1 && page > 1 ? page - 1 : page
       await runQuery({ page: nextPage })
     } catch (reason) {
@@ -1584,6 +1590,17 @@ export default function App() {
     } finally {
       setMutatingDocumentId(null)
     }
+  }
+
+  function resolveWriteApproval(approved: boolean): void {
+    if (!writeApproval || !window.mongoPilot) return
+    window.mongoPilot.writeApprovals.resolve({ id: writeApproval.id, approved })
+    setWriteApproval(null)
+  }
+
+  function changeDateDisplayMode(mode: DateDisplayMode): void {
+    setDateDisplayMode(mode)
+    localStorage.setItem("mongo-pilot:date-display", mode)
   }
 
   function preferenceKey(connectionId: string, database: string, collection: string): string {
@@ -1769,10 +1786,12 @@ export default function App() {
                 {error && <div role="alert" className="mt-2 flex items-center justify-between rounded border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"><span>{error}</span><button type="button" onClick={() => setError("")} className="rounded p-1 focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none" aria-label="Dismiss error"><X size={14} /></button></div>}
               </div>
               <div className="flex h-10 items-center border-b border-line px-3">
-                {selectedCollection && <IconButton label="Refresh documents" onClick={() => void runQuery()}><ArrowClockwise size={15} aria-hidden="true" /></IconButton>}
+                {selectedCollection && <button type="button" onClick={() => void runQuery()} disabled={querying} aria-busy={querying} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-canvas px-2.5 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><ArrowClockwise size={14} className={querying ? "animate-spin" : ""} aria-hidden="true" />Refresh</button>}
                 <div className="mx-2 h-4 border-l border-line" />
                 <span className="flex h-8 items-center gap-1.5 rounded bg-raised px-2.5 text-xs text-ink"><BracketsCurly size={14} aria-hidden="true" />JSON</span>
                 <div className="ml-auto flex items-center gap-2">
+                  <label htmlFor="date-display" className="font-mono text-[9px] uppercase tracking-wider text-faint">Dates</label>
+                  <CustomSelect id="date-display" ariaLabel="Date display format" value={dateDisplayMode} options={[{ value: "database", label: "Database UTC" }, { value: "local", label: "Local time" }]} onChange={changeDateDisplayMode} align="end" className="w-28" buttonClassName="h-7 font-mono text-[9px]" />
                   <label htmlFor="page-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Rows</label>
                   <CustomSelect id="page-size" ariaLabel="Rows per page" value={pageSize} disabled={querying || !selectedCollection} options={pageSizes.map((size) => ({ value: size, label: String(size) }))} onChange={(nextPageSize) => void runQuery({ page: 1, pageSize: nextPageSize })} align="end" className="w-16" buttonClassName="h-7 font-mono text-[10px] tabular-nums" />
                   <div className="flex items-center gap-1">
@@ -1808,7 +1827,7 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3 pr-28"><JsonDocument document={parseTransportDocument(row.document)} /></div>
+                          <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3 pr-28"><JsonDocument document={parseTransportDocument(row.document)} dateMode={dateDisplayMode} /></div>
                         )}
                         {editingDocumentId !== row.id && (
                           <div className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-line bg-panel p-1 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
@@ -1841,6 +1860,7 @@ export default function App() {
                   pipeline={aggregationPipeline}
                   limit={aggregationLimit}
                   result={aggregationResult}
+                  dateMode={dateDisplayMode}
                   loading={aggregationLoading}
                   error={aggregationError}
                   onPipelineChange={setAggregationPipeline}
@@ -1925,19 +1945,7 @@ export default function App() {
           await connect(connection)
         }}
       />}
-      {pendingDeleteDocumentId && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm">
-          <button type="button" aria-label="Cancel document deletion" disabled={mutatingDocumentId !== null} onClick={() => setPendingDeleteDocumentId(null)} className="absolute inset-0 cursor-default focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait" />
-          <section role="alertdialog" aria-modal="true" aria-labelledby="delete-document-title" aria-describedby="delete-document-description" className="relative z-10 w-full max-w-md rounded-lg border border-line-strong bg-panel p-5 shadow-2xl">
-            <h2 id="delete-document-title" className="text-base font-semibold">Delete document?</h2>
-            <p id="delete-document-description" className="mt-2 text-xs leading-5 text-muted">This permanently deletes the document from <span className="font-mono text-ink">{selectedDatabase}.{selectedCollection}</span>. This action cannot be undone.</p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button ref={deleteCancelRef} type="button" disabled={mutatingDocumentId !== null} onClick={() => setPendingDeleteDocumentId(null)} className="h-10 rounded-md border border-line px-4 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-50">Cancel</button>
-              <button type="button" disabled={mutatingDocumentId !== null} onClick={() => void deleteDocument(pendingDeleteDocumentId)} className="inline-flex h-10 items-center gap-2 rounded-md bg-danger px-4 text-xs font-semibold text-canvas hover:brightness-110 focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><Trash size={14} aria-hidden="true" />{mutatingDocumentId !== null ? "Deleting..." : "Delete document"}</button>
-            </div>
-          </section>
-        </div>
-      )}
+      {writeApproval && <WriteApprovalDialog request={writeApproval} onResolve={resolveWriteApproval} />}
       {pendingRemoveConnection && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm">
           <button type="button" aria-label="Cancel connection removal" disabled={removingConnectionId !== null} onClick={() => setPendingRemoveConnection(null)} className="absolute inset-0 cursor-default focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait" />

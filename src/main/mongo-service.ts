@@ -5,9 +5,12 @@ import type { AgentAccessMode, AggregateInput, AggregateResult, CollectionIndexI
 import { parseAggregationPipeline } from "./aggregation-pipeline"
 import { parseExtendedJson, serializeBson, serializeBsonArray, stringifyCanonicalExtendedJson, stringifyMongoDocument } from "./bson-serialization"
 import type { ConnectionStore } from "./connection-store"
+import { isVisibleCollection, isVisibleDatabase } from "./namespace-visibility"
 import { analyzeDocuments } from "./schema-analysis"
 import { parseVisualizationSpec } from "./visualization-spec"
 import { normalizeVisualizationValue } from "./visualization-values"
+import { writeApprovalPreview } from "./write-approval-broker"
+import type { WriteApprovalService } from "./write-approval-service"
 
 interface ActiveConnection {
   client: MongoClient
@@ -67,7 +70,10 @@ export class MongoService {
   private readonly active = new Map<string, ActiveConnection>()
   private readonly shells = new Map<string, ShellSession>()
 
-  constructor(private readonly store: ConnectionStore) {}
+  constructor(
+    private readonly store: ConnectionStore,
+    private readonly writeApprovals: WriteApprovalService,
+  ) {}
 
   async connect(id: string): Promise<{ connection: SavedConnection; databases: DatabaseInfo[] }> {
     await this.disconnect(id)
@@ -148,6 +154,15 @@ export class MongoService {
     this.requireWrite(input.connectionId)
     if (!input.code.trim()) throw new Error("Enter a mongosh command.")
     if (input.code.length > shellInputLimit) throw new Error("Shell input must be smaller than 256 KB.")
+    await this.writeApprovals.request({
+      connectionId: input.connectionId,
+      source: "shell",
+      title: "Approve shell command",
+      description: "Shell commands run with database write access. Review this command before Mongo Pilot executes it.",
+      preview: writeApprovalPreview(input.code),
+      destructive: false,
+    })
+    this.requireWrite(input.connectionId)
     const session = this.requireShell(input.connectionId)
     session.printed = []
     session.printedLength = 0
@@ -185,7 +200,7 @@ export class MongoService {
   async listCollections(connectionId: string, database: string): Promise<CollectionInfo[]> {
     const active = this.requireRead(connectionId)
     const collections = await active.client.db(database).listCollections({}, { nameOnly: true }).toArray()
-    return collections.map(({ name, type }) => ({ name, type: type ?? "collection" }))
+    return collections.filter(({ name }) => isVisibleCollection(name)).map(({ name, type }) => ({ name, type: type ?? "collection" }))
   }
 
   async find(input: FindInput): Promise<FindResult> {
@@ -307,20 +322,37 @@ export class MongoService {
   }
 
   async replaceDocument(input: ReplaceDocumentInput): Promise<void> {
-    const active = this.requireWrite(input.connectionId)
+    this.requireWrite(input.connectionId)
     if (input.document.length > 10 * 1024 * 1024) throw new Error("Document must be smaller than 10 MB.")
     const id = parseExtendedJson(input.id)
     const document = parseExtendedJson(input.document)
     if (!document || Array.isArray(document) || typeof document !== "object") throw new Error("Document must be a JSON object.")
     const replacement = { ...(document as Document), _id: id }
-    const result = await active.client.db(input.database).collection(input.collection).replaceOne({ _id: id } as Filter<Document>, replacement)
+    await this.writeApprovals.request({
+      connectionId: input.connectionId,
+      source: "document",
+      title: "Approve document replacement",
+      description: `Replace document ${input.id} in ${input.database}.${input.collection}.`,
+      preview: writeApprovalPreview(input.document),
+      destructive: false,
+    })
+    const approvedActive = this.requireWrite(input.connectionId)
+    const result = await approvedActive.client.db(input.database).collection(input.collection).replaceOne({ _id: id } as Filter<Document>, replacement)
     if (result.matchedCount === 0) throw new Error("Document no longer exists.")
   }
 
   async deleteDocument(input: DocumentTargetInput): Promise<void> {
-    const active = this.requireWrite(input.connectionId)
+    this.requireWrite(input.connectionId)
     const id = parseExtendedJson(input.id)
-    const result = await active.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>)
+    await this.writeApprovals.request({
+      connectionId: input.connectionId,
+      source: "document",
+      title: "Approve document deletion",
+      description: `Permanently delete document ${input.id} from ${input.database}.${input.collection}. This cannot be undone.`,
+      destructive: true,
+    })
+    const approvedActive = this.requireWrite(input.connectionId)
+    const result = await approvedActive.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>)
     if (result.deletedCount === 0) throw new Error("Document no longer exists.")
   }
 
@@ -358,30 +390,64 @@ export class MongoService {
     return active.client.db(database).collection(collection).countDocuments(filter, { maxTimeMS: 30_000 })
   }
 
-  async agentInsertOne(connectionId: string, database: string, collection: string, document: Document): Promise<unknown> {
-    const active = this.requireAgentWrite(connectionId)
-    const result = await active.client.db(database).collection(collection).insertOne(document)
+  async agentInsertOne(connectionId: string, database: string, collection: string, document: Document, approvalScope: string): Promise<unknown> {
+    this.requireAgentWrite(connectionId)
+    await this.writeApprovals.request({
+      scope: approvalScope,
+      connectionId,
+      source: "agent",
+      title: "Approve agent insert",
+      description: `Allow Pilot to insert one document into ${database}.${collection}.`,
+      preview: writeApprovalPreview(JSON.stringify(serializeBson(document), null, 2)),
+      destructive: false,
+    })
+    const approvedActive = this.requireAgentWrite(connectionId)
+    const result = await approvedActive.client.db(database).collection(collection).insertOne(document)
     return serializeBson({ acknowledged: result.acknowledged, insertedId: result.insertedId })
   }
 
-  async agentUpdateOne(connectionId: string, database: string, collection: string, filter: Filter<Document>, update: UpdateFilter<Document>): Promise<unknown> {
-    const active = this.requireAgentWrite(connectionId)
+  async agentUpdateOne(connectionId: string, database: string, collection: string, filter: Filter<Document>, update: UpdateFilter<Document>, approvalScope: string): Promise<unknown> {
+    this.requireAgentWrite(connectionId)
     if (Object.keys(filter).length === 0) throw new Error("Agent updates require a non-empty filter.")
-    const result = await active.client.db(database).collection(collection).updateOne(filter, update)
+    await this.writeApprovals.request({
+      scope: approvalScope,
+      connectionId,
+      source: "agent",
+      title: "Approve agent update",
+      description: `Allow Pilot to update one matching document in ${database}.${collection}.`,
+      preview: writeApprovalPreview(JSON.stringify(serializeBson({ filter, update }), null, 2)),
+      destructive: false,
+    })
+    const approvedActive = this.requireAgentWrite(connectionId)
+    const result = await approvedActive.client.db(database).collection(collection).updateOne(filter, update)
     return { acknowledged: result.acknowledged, matchedCount: result.matchedCount, modifiedCount: result.modifiedCount }
   }
 
-  async agentDeleteOne(connectionId: string, database: string, collection: string, filter: Filter<Document>): Promise<unknown> {
-    const active = this.requireAgentWrite(connectionId)
+  async agentDeleteOne(connectionId: string, database: string, collection: string, filter: Filter<Document>, approvalScope: string): Promise<unknown> {
+    this.requireAgentWrite(connectionId)
     if (Object.keys(filter).length === 0) throw new Error("Agent deletes require a non-empty filter.")
-    const result = await active.client.db(database).collection(collection).deleteOne(filter)
+    await this.writeApprovals.request({
+      scope: approvalScope,
+      connectionId,
+      source: "agent",
+      title: "Approve agent deletion",
+      description: `Allow Pilot to delete one matching document from ${database}.${collection}. This cannot be undone.`,
+      preview: writeApprovalPreview(JSON.stringify(serializeBson(filter), null, 2)),
+      destructive: true,
+    })
+    const approvedActive = this.requireAgentWrite(connectionId)
+    const result = await approvedActive.client.db(database).collection(collection).deleteOne(filter)
     return { acknowledged: result.acknowledged, deletedCount: result.deletedCount }
   }
 
   private async listDatabases(connectionId: string): Promise<DatabaseInfo[]> {
     const active = this.requireRead(connectionId)
     const result = await active.client.db("admin").admin().listDatabases()
-    return result.databases.map(({ name, sizeOnDisk, empty }) => ({ name, sizeOnDisk, empty }))
+    return result.databases.filter(({ name }) => isVisibleDatabase(name)).map(({ name, sizeOnDisk, empty }) => ({ name, sizeOnDisk, empty }))
+  }
+
+  cancelAgentWriteApproval(scope?: string): void {
+    this.writeApprovals.cancelAgentRequest(scope)
   }
 
   private requireRead(id: string): ActiveConnection {

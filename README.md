@@ -6,16 +6,19 @@ Mongo Pilot is an Electron desktop workspace for MongoDB with an embedded OpenCo
 
 - Save MongoDB connection strings encrypted through Electron `safeStorage`
 - Label connections by environment and switch an app-enforced read-only safety lock without reconnecting
+- Reuse one encrypted saved connection while switching it between read-only and read/write mode
 - Run an official mongosh worker with multiline input, command history, completion, interruption, and bounded output
 - Connect with the official MongoDB Node.js driver
 - List databases and collections
 - Load collections automatically with bounded, paginated `find` queries
+- Hide internal databases, system collections, and replica-set oplog data from normal browsing
+- Refresh the active query, open HTTP/HTTPS values safely, and switch BSON dates between database UTC and local time
 - Run bounded read-only Extended JSON aggregation pipelines with live results
 - Infer nested field presence and exact BSON types from bounded collection samples
 - List live collection index definitions, key directions, and index options
 - Generate live collection reports from counts, schema findings, and index metadata
 - Persist page-size and Extended JSON sort defaults per collection
-- Let users attempt direct edits on read/write connections while independently enforcing read or read/write access for the agent
+- Require explicit approval for every direct, shell, or agent operation that can modify MongoDB data
 - Start a bundled OpenCode loopback server through `@opencode-ai/sdk/v2`
 - Create OpenCode sessions and send workspace-aware prompts
 - Expose authenticated MongoDB MCP tools to OpenCode based on the selected agent access mode
@@ -45,7 +48,7 @@ npm run lint
 npm run build
 ```
 
-Pushes to `main` create a uniquely versioned GitHub release with macOS, Windows, and Linux installers plus the manifests and blockmaps consumed by `electron-updater`.
+Tags matching `v*` create a version-matched GitHub release with macOS, Windows, and Linux installers plus the manifests and blockmaps consumed by `electron-updater`.
 
 ## Security Boundaries
 
@@ -55,7 +58,8 @@ Pushes to `main` create a uniquely versioned GitHub release with macOS, Windows,
 - Explicit connection-string copy requests are handled in the main process and write directly to the operating system clipboard.
 - Connection safety mode blocks write paths inside Mongo Pilot and can be switched without reconnecting. It does not change MongoDB authorization; use a database user with the `read` role for server-enforced read-only access.
 - Agent access modes independently limit OpenCode tools and cannot override a connection's read-only safety mode.
-- The embedded shell is available only in read/write mode and is terminated immediately when connection safety changes to read-only. Shell commands still execute with the MongoDB user's server-side privileges.
+- Read/write mode enables mutation capability but never grants automatic approval. Each document mutation, shell command, or agent write requires a one-time user decision.
+- The embedded shell is available only in read/write mode and is terminated immediately when connection safety changes to read-only. Every shell command requires explicit approval because shell JavaScript cannot be safely classified as read-only.
 - OpenCode tools default to denied; web access requires approval.
 - MongoDB MCP requests require an app-generated bearer token and a short-lived active connection grant.
 - Agent permissions are enforced both in OpenCode tool exposure and inside each MongoDB operation.

@@ -1,4 +1,5 @@
 export type BsonDisplayKind = "id" | "date" | "number" | "binary" | "regex" | "special"
+export type DateDisplayMode = "database" | "local"
 
 export interface BsonDisplay {
   kind: BsonDisplayKind
@@ -18,15 +19,24 @@ function quote(value: string): string {
   return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`
 }
 
-function compassDate(value: Date): string {
-  return value.toISOString().replace(/Z$/, "+00:00")
+function formatDate(value: Date, mode: DateDisplayMode): string {
+  return mode === "local" ? value.toLocaleString() : value.toISOString().replace(/Z$/, "+00:00")
 }
 
-function nestedDisplay(value: unknown): string {
-  return getBsonDisplay(value)?.text ?? JSON.stringify(value)
+function nestedDisplay(value: unknown, dateMode: DateDisplayMode): string {
+  return getBsonDisplay(value, dateMode)?.text ?? JSON.stringify(value)
 }
 
-export function getBsonDisplay(value: unknown): BsonDisplay | null {
+export function isWebUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === "http:" || url.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+export function getBsonDisplay(value: unknown, dateMode: DateDisplayMode = "database"): BsonDisplay | null {
   if (!isRecord(value)) return null
 
   if (hasOnlyKeys(value, ["$oid"]) && typeof value.$oid === "string") {
@@ -39,7 +49,7 @@ export function getBsonDisplay(value: unknown): BsonDisplay | null {
       : null
     const date = typeof value.$date === "string" ? new Date(value.$date) : milliseconds === null ? null : new Date(Number(milliseconds))
     if (date && !Number.isNaN(date.valueOf())) {
-      return { kind: "date", text: compassDate(date) }
+      return { kind: "date", text: formatDate(date, dateMode) }
     }
     return { kind: "date", text: milliseconds === null ? "Invalid Date" : `Date(${quote(milliseconds)})` }
   }
@@ -83,7 +93,7 @@ export function getBsonDisplay(value: unknown): BsonDisplay | null {
   const dbRefKeys = "$db" in value ? ["$ref", "$id", "$db"] : ["$ref", "$id"]
   if (hasOnlyKeys(value, dbRefKeys) && typeof value.$ref === "string") {
     const database = typeof value.$db === "string" ? `, ${quote(value.$db)}` : ""
-    return { kind: "id", text: `DBRef(${quote(value.$ref)}, ${nestedDisplay(value.$id)}${database})` }
+    return { kind: "id", text: `DBRef(${quote(value.$ref)}, ${nestedDisplay(value.$id, dateMode)}${database})` }
   }
 
   return null

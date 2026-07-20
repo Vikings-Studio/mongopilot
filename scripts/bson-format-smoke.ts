@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { Decimal128, Int32, Long, ObjectId } from "mongodb"
 import { parseSerializedDocument, serializeBson, serializeMongoDocument, stringifyCanonicalExtendedJson, stringifyMongoDocument } from "../src/main/bson-serialization"
-import { getBsonDisplay } from "../src/renderer/src/bson-format"
+import { getBsonDisplay, isWebUrl } from "../src/renderer/src/bson-format"
 
 const cases: Array<[unknown, string]> = [
   [{ $oid: "507f1f77bcf86cd799439011" }, "ObjectId('507f1f77bcf86cd799439011')"],
@@ -22,6 +22,11 @@ const cases: Array<[unknown, string]> = [
 
 for (const [input, expected] of cases) assert.equal(getBsonDisplay(input)?.text, expected)
 assert.equal(getBsonDisplay({ $oid: "value", other: true }), null)
+assert.equal(getBsonDisplay({ $date: { $numberLong: "1609459200000" } }, "local")?.text, new Date(1609459200000).toLocaleString())
+assert.equal(isWebUrl("https://www.mongodb.com/docs/"), true)
+assert.equal(isWebUrl("http://localhost:3000/path"), true)
+assert.equal(isWebUrl("javascript:alert(1)"), false)
+assert.equal(isWebUrl("not a URL"), false)
 
 const objectId = "507f1f77bcf86cd799439011"
 const serializedDocument = serializeBson({

@@ -4,6 +4,23 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-19
+
+### Added
+
+- Add a visible refresh action that reruns the current document query without changing data.
+- Make HTTP and HTTPS string values safely clickable in document views.
+- Add a persistent toggle between database UTC and localized date-time display.
+
+### Changed
+
+- Hide MongoDB internal databases and collections from normal discovery, including replica-set oplog entries, to match Compass's default browsing behavior.
+
+### Security
+
+- Require a one-time, operation-specific user approval for document replacements and deletions, every shell command, and every agent insert, update, or deletion, even when the saved connection is in read/write mode.
+- Resume or reject pending agent tool calls immediately after the user approves or cancels instead of leaving the agent waiting.
+
 ## [0.2.1] - 2026-07-19
 
 ### Fixed

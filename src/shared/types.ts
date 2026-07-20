@@ -188,6 +188,23 @@ export interface ReplaceDocumentInput extends DocumentTargetInput {
   document: string
 }
 
+export type WriteApprovalSource = "document" | "shell" | "agent"
+
+export interface WriteApprovalRequest {
+  id: string
+  connectionId: string
+  source: WriteApprovalSource
+  title: string
+  description: string
+  preview?: string
+  destructive: boolean
+}
+
+export interface WriteApprovalResponse {
+  id: string
+  approved: boolean
+}
+
 export type CopilotStatus =
   | { state: "stopped" }
   | { state: "starting" }
@@ -255,6 +272,11 @@ export type UpdateStatus =
   | { state: "error"; currentVersion: string; message: string }
 
 export interface MongoPilotApi {
+  writeApprovals: {
+    resolve(response: WriteApprovalResponse): void
+    onRequest(listener: (request: WriteApprovalRequest) => void): () => void
+    onCancelled(listener: (id: string) => void): () => void
+  }
   connections: {
     list(): Promise<SavedConnection[]>
     save(input: SaveConnectionInput): Promise<SavedConnection>
