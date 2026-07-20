@@ -4,7 +4,7 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
-## [0.2.2] - 2026-07-19
+## [0.2.2] - 2026-07-21
 
 ### Added
 
