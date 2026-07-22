@@ -215,6 +215,7 @@ export type CopilotStatus =
 
 export interface CopilotPromptInput {
   text: string
+  variant?: string
   model?: {
     providerID: string
     modelID: string
@@ -251,6 +252,7 @@ export interface CopilotModel {
   name: string
   family?: string
   supportsTools: boolean
+  reasoningLevels: string[]
   contextLimit: number
   status: "alpha" | "beta" | "deprecated" | "active"
 }

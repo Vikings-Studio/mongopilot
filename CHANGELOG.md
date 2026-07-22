@@ -4,6 +4,13 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-22
+
+### Added
+
+- Group OpenCode models by provider and expose each model's supported reasoning levels in the model picker.
+- Persist the selected reasoning level and send it as the OpenCode prompt variant.
+
 ## [0.2.7] - 2026-07-22
 
 ### Changed

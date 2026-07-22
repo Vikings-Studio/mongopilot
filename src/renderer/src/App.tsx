@@ -95,6 +95,25 @@ function readPreferredModel(): { providerID: string; modelID: string } | undefin
   if (!stored || separator <= 0 || separator === stored.length - 1) return undefined
   return { providerID: stored.slice(0, separator), modelID: stored.slice(separator + 1) }
 }
+
+function formatReasoningLevel(level: string): string {
+  if (level.toLocaleLowerCase() === "xhigh") return "Extra high"
+  return level.replaceAll(/[_-]+/g, " ").replace(/^./, (character) => character.toLocaleUpperCase())
+}
+
+function modelKey(model: Pick<CopilotModel, "providerID" | "modelID">): string {
+  return `${model.providerID}/${model.modelID}`
+}
+
+function readReasoningLevel(model: CopilotModel | undefined): string | undefined {
+  if (!model) return undefined
+  try {
+    const stored = JSON.parse(localStorage.getItem("mongo-pilot:copilot-reasoning") ?? "null") as { model?: string; level?: string } | null
+    return stored?.model === modelKey(model) && stored.level && model.reasoningLevels.includes(stored.level) ? stored.level : undefined
+  } catch {
+    return undefined
+  }
+}
 const panelLimits = {
   left: { min: 180, max: 420, initial: 240 },
   right: { min: 260, max: 560, initial: 320 },
@@ -716,14 +735,26 @@ function CopilotPanel({
   const [modelQuery, setModelQuery] = useState("")
   const [models, setModels] = useState<CopilotModel[]>([])
   const [selectedModel, setSelectedModel] = useState<CopilotModel | null>(null)
+  const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<string | undefined>()
+  const [expandedReasoningModel, setExpandedReasoningModel] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState(false)
+  const [modelLoadAttempt, setModelLoadAttempt] = useState(0)
   const modelSearchRef = useRef<HTMLInputElement>(null)
+  const modelTriggerRef = useRef<HTMLButtonElement>(null)
+  const modelOptionsRef = useRef<HTMLDivElement>(null)
   const deferredModelQuery = useDeferredValue(modelQuery)
   const normalizedModelQuery = deferredModelQuery.trim().toLocaleLowerCase()
   const filteredModels = normalizedModelQuery
     ? models.filter((model) => [model.name, model.providerName, model.providerID, model.modelID, model.family]
       .some((value) => value?.toLocaleLowerCase().includes(normalizedModelQuery)))
     : models
+  const groupedModels = [...filteredModels.reduce((groups, model) => {
+    const group = groups.get(model.providerID)
+    if (group) group.models.push(model)
+    else groups.set(model.providerID, { providerID: model.providerID, providerName: model.providerName, models: [model] })
+    return groups
+  }, new Map<string, { providerID: string; providerName: string; models: CopilotModel[] }>()).values()]
 
   useEffect(() => setLocalStatus(status), [status])
   useEffect(() => {
@@ -735,6 +766,8 @@ function CopilotPanel({
     if (status.state !== "ready" || !window.mongoPilot || typeof window.mongoPilot.copilot.models !== "function") return
     let cancelled = false
     setModelsLoading(true)
+    setModelsError(false)
+    if (modelLoadAttempt > 0) setModels([])
     void window.mongoPilot.copilot.models()
       .then((result) => {
         if (cancelled) return
@@ -747,10 +780,15 @@ function CopilotPanel({
         const defaultModel = configuredDefault
           ? result.models.find((model) => model.providerID === configuredDefault.providerID && model.modelID === configuredDefault.modelID)
           : undefined
-        setSelectedModel(preferred ?? defaultModel ?? result.models.find((model) => model.supportsTools) ?? result.models[0] ?? null)
+        const nextModel = preferred ?? defaultModel ?? result.models.find((model) => model.supportsTools) ?? result.models[0]
+        setSelectedModel(nextModel ?? null)
+        setSelectedReasoningLevel(readReasoningLevel(nextModel))
       })
       .catch(() => {
-        if (!cancelled) setModels([])
+        if (!cancelled) {
+          setModels([])
+          setModelsError(true)
+        }
       })
       .finally(() => {
         if (!cancelled) setModelsLoading(false)
@@ -758,7 +796,29 @@ function CopilotPanel({
     return () => {
       cancelled = true
     }
-  }, [status.state])
+  }, [status.state, modelLoadAttempt])
+
+  function chooseModel(model: CopilotModel, reasoningLevel?: string): void {
+    setSelectedModel(model)
+    setSelectedReasoningLevel(reasoningLevel)
+    localStorage.setItem("mongo-pilot:copilot-model", modelKey(model))
+    if (reasoningLevel) {
+      localStorage.setItem("mongo-pilot:copilot-reasoning", JSON.stringify({ model: modelKey(model), level: reasoningLevel }))
+    } else {
+      localStorage.removeItem("mongo-pilot:copilot-reasoning")
+    }
+    setExpandedReasoningModel(null)
+    setModelMenuOpen(false)
+    setModelQuery("")
+    window.requestAnimationFrame(() => modelTriggerRef.current?.focus())
+  }
+
+  function closeModelMenu(focusTrigger: boolean): void {
+    setExpandedReasoningModel(null)
+    setModelMenuOpen(false)
+    setModelQuery("")
+    if (focusTrigger) window.requestAnimationFrame(() => modelTriggerRef.current?.focus())
+  }
 
   async function send(event: FormEvent) {
     event.preventDefault()
@@ -774,6 +834,7 @@ function CopilotPanel({
         text,
         context,
         model: selectedModel ? { providerID: selectedModel.providerID, modelID: selectedModel.modelID } : undefined,
+        variant: selectedReasoningLevel,
       })
       setMessages((current) => [...current, createMessage("assistant", reply.text)])
       if (window.mongoPilot) setLocalStatus(await window.mongoPilot.copilot.status())
@@ -839,36 +900,43 @@ function CopilotPanel({
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
             <fieldset
               className="relative m-0 min-w-0 border-0 p-0"
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && modelMenuOpen) {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  closeModelMenu(true)
+                }
+              }}
               onBlur={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget)) {
-                  setModelMenuOpen(false)
-                  setModelQuery("")
+                  closeModelMenu(false)
                 }
               }}
             >
               <legend className="sr-only">Model selection</legend>
               <button
                 type="button"
-                aria-haspopup="listbox"
+                ref={modelTriggerRef}
+                aria-haspopup="dialog"
                 aria-expanded={modelMenuOpen}
                 onClick={() => {
                   if (modelMenuOpen) setModelQuery("")
+                  setExpandedReasoningModel(null)
                   setModelMenuOpen(!modelMenuOpen)
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
-                    setModelMenuOpen(false)
-                    setModelQuery("")
+                    closeModelMenu(true)
                   }
                 }}
                 className="flex h-7 max-w-36 items-center gap-1.5 rounded border border-line bg-canvas px-2 text-[10px] font-medium text-muted transition-[border-color,background-color,color] duration-150 ease-product hover:border-line-strong hover:text-ink focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/25 focus-visible:outline-none"
               >
                 <Robot size={12} className="shrink-0 text-accent" aria-hidden="true" />
-                <span className="truncate">{modelsLoading ? "Loading models" : selectedModel?.name ?? "Choose model"}</span>
+                <span className="truncate">{modelsLoading ? "Loading models" : selectedModel ? `${selectedModel.name}${selectedReasoningLevel ? ` · ${formatReasoningLevel(selectedReasoningLevel)}` : ""}` : "Choose model"}</span>
                 <CaretDown size={10} className="shrink-0" aria-hidden="true" />
               </button>
               {modelMenuOpen && (
-                <div className="absolute bottom-full left-0 z-10 mb-2 w-72 overflow-hidden rounded-md border border-line-strong bg-raised shadow-xl shadow-canvas/50">
+                <div role="dialog" aria-label="Choose OpenCode model" className="absolute bottom-full left-0 z-10 mb-2 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-line-strong bg-raised shadow-xl shadow-canvas/50">
                   <div className="border-b border-line p-2">
                     <label htmlFor="model-search" className="sr-only">Search models</label>
                     <div className="flex h-9 items-center gap-2 rounded-md border border-line bg-canvas px-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
@@ -882,10 +950,13 @@ function CopilotPanel({
                         onChange={(event) => setModelQuery(event.target.value)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") event.preventDefault()
+                          if (event.key === "ArrowDown") {
+                            event.preventDefault()
+                            modelOptionsRef.current?.querySelector<HTMLButtonElement>("button")?.focus()
+                          }
                           if (event.key === "Escape") {
                             event.preventDefault()
-                            setModelMenuOpen(false)
-                            setModelQuery("")
+                            closeModelMenu(true)
                           }
                         }}
                         placeholder="Search models..."
@@ -893,33 +964,64 @@ function CopilotPanel({
                       />
                     </div>
                   </div>
-                  <div role="listbox" aria-label="OpenCode model" className="scrollbar-thin max-h-64 overflow-y-auto p-1">
-                    {filteredModels.map((model) => {
-                      const selected = selectedModel?.providerID === model.providerID && selectedModel.modelID === model.modelID
-                      return (
-                        <button
-                          key={`${model.providerID}/${model.modelID}`}
-                          type="button"
-                          role="option"
-                          aria-selected={selected}
-                          onClick={() => {
-                            setSelectedModel(model)
-                            localStorage.setItem("mongo-pilot:copilot-model", `${model.providerID}/${model.modelID}`)
-                            setModelMenuOpen(false)
-                            setModelQuery("")
-                          }}
-                          className="flex min-h-11 w-full items-center gap-2 rounded px-2 text-left hover:bg-panel focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
-                        >
-                          <Check size={12} className={`shrink-0 ${selected ? "opacity-100" : "opacity-0"}`} aria-hidden="true" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[11px] font-medium text-ink">{model.name}</span>
-                            <span className="block truncate font-mono text-[9px] text-faint">{model.providerName} · {model.modelID}</span>
-                          </span>
-                          {!model.supportsTools && <span className="shrink-0 rounded border border-line px-1 font-mono text-[8px] text-faint">NO TOOLS</span>}
-                        </button>
-                      )
-                    })}
-                    {!modelsLoading && models.length === 0 && <p className="px-3 py-6 text-center text-[11px] text-faint">No models available</p>}
+                  <div ref={modelOptionsRef} className="scrollbar-thin max-h-64 overflow-y-auto p-1">
+                    {groupedModels.map((group, groupIndex) => (
+                      <fieldset key={group.providerID} className="m-0 min-w-0 border-0 p-0">
+                        <legend className="sticky top-0 z-[1] block w-full bg-raised px-2 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-faint">{group.providerName}</legend>
+                        {group.models.map((model, modelIndex) => {
+                          const key = modelKey(model)
+                          const selected = selectedModel?.providerID === model.providerID && selectedModel.modelID === model.modelID
+                          const reasoningExpanded = expandedReasoningModel === key
+                          const reasoningId = `reasoning-${groupIndex}-${modelIndex}`
+                          return (
+                            <fieldset
+                              key={key}
+                              onPointerEnter={(event) => event.pointerType === "mouse" && model.reasoningLevels.length > 0 && setExpandedReasoningModel(key)}
+                              onPointerLeave={(event) => {
+                                if (!event.currentTarget.contains(document.activeElement)) setExpandedReasoningModel((current) => current === key ? null : current)
+                              }}
+                              onBlur={(event) => {
+                                if (!event.currentTarget.contains(event.relatedTarget)) setExpandedReasoningModel((current) => current === key ? null : current)
+                              }}
+                              className="m-0 min-w-0 rounded border-0 p-0 hover:bg-panel focus-within:bg-panel"
+                            >
+                              <legend className="sr-only">{model.name} options</legend>
+                              <div className="flex items-center">
+                                <button
+                                  type="button"
+                                  aria-pressed={selected}
+                                  title={`${model.name} (${model.modelID})`}
+                                  onFocus={() => model.reasoningLevels.length > 0 && setExpandedReasoningModel(key)}
+                                  onClick={() => chooseModel(model)}
+                                  className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded px-2 text-left focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+                                >
+                                  <Check size={12} className={`shrink-0 ${selected ? "opacity-100" : "opacity-0"}`} aria-hidden="true" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-[11px] font-medium text-ink">{model.name}</span>
+                                    <span className="block truncate font-mono text-[10px] text-faint">{model.modelID}</span>
+                                  </span>
+                                  {!model.supportsTools && <span className="shrink-0 rounded border border-line px-1 font-mono text-[9px] text-faint">NO TOOLS</span>}
+                                </button>
+                                {model.reasoningLevels.length > 0 && <button type="button" aria-expanded={reasoningExpanded} aria-controls={reasoningId} aria-label={`Choose ${model.name} reasoning level`} onClick={() => setExpandedReasoningModel((current) => current === key ? null : key)} className="grid size-10 shrink-0 place-items-center rounded text-faint hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"><CaretRight size={11} className={`transition-transform motion-reduce:transition-none ${reasoningExpanded ? "rotate-90" : ""}`} aria-hidden="true" /></button>}
+                              </div>
+                              {model.reasoningLevels.length > 0 && (
+                                <fieldset id={reasoningId} className={`mx-2 mb-1 flex-wrap gap-1 border-0 border-t border-line py-2 pl-5 ${reasoningExpanded ? "flex" : "hidden"}`}>
+                                  <legend className="sr-only">{model.name} reasoning level</legend>
+                                  <button type="button" aria-pressed={selected && selectedReasoningLevel === undefined} onClick={() => chooseModel(model)} className={`min-h-10 rounded border px-2 text-[10px] font-medium focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${selected && selectedReasoningLevel === undefined ? "border-accent bg-accent/15 text-accent" : "border-line text-muted hover:border-line-strong hover:text-ink"}`}>Default</button>
+                                  {model.reasoningLevels.map((level) => {
+                                    const levelSelected = selected && selectedReasoningLevel === level
+                                    return <button key={level} type="button" aria-pressed={levelSelected} onClick={() => chooseModel(model, level)} className={`min-h-10 rounded border px-2 text-[10px] font-medium focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${levelSelected ? "border-accent bg-accent/15 text-accent" : "border-line text-muted hover:border-line-strong hover:text-ink"}`}>{formatReasoningLevel(level)}</button>
+                                  })}
+                                </fieldset>
+                              )}
+                            </fieldset>
+                          )
+                        })}
+                      </fieldset>
+                    ))}
+                    {modelsLoading && <p aria-live="polite" className="px-3 py-6 text-center text-[11px] text-faint">Loading models...</p>}
+                    {!modelsLoading && modelsError && <div role="alert" className="flex flex-col items-center gap-2 px-3 py-5 text-center"><p className="text-[11px] text-faint">Could not load models.</p><button type="button" onClick={() => setModelLoadAttempt((attempt) => attempt + 1)} className="min-h-10 rounded border border-line px-3 text-[10px] font-medium text-muted hover:border-line-strong hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">Try again</button></div>}
+                    {!modelsLoading && !modelsError && models.length === 0 && <p className="px-3 py-6 text-center text-[11px] text-faint">No models available</p>}
                     {!modelsLoading && models.length > 0 && filteredModels.length === 0 && <p className="px-3 py-6 text-center text-[11px] text-faint">No models match "{deferredModelQuery.trim()}"</p>}
                   </div>
                 </div>

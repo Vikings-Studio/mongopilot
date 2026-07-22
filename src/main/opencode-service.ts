@@ -228,6 +228,7 @@ export class OpencodeService {
         name: model.name,
         family: model.family,
         supportsTools: model.capabilities.toolcall,
+        reasoningLevels: model.capabilities.reasoning ? Object.keys(model.variants ?? {}) : [],
         contextLimit: model.limit.context,
         status: model.status,
       })))
@@ -307,6 +308,7 @@ export class OpencodeService {
       system,
       tools,
       model: input.model,
+      variant: input.variant,
       parts: [{ type: "text", text: input.text }],
     })
     this.assertActiveRequest(lifecycleVersion)
