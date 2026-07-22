@@ -943,7 +943,7 @@ function CopilotPanel({
                 className="flex h-7 items-center gap-1.5 rounded border border-line bg-canvas px-2 text-[10px] font-medium text-muted transition-[border-color,background-color,color] duration-150 ease-product hover:border-line-strong hover:text-ink focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/25 focus-visible:outline-none"
               >
                 <ShieldCheck size={12} className="text-accent" aria-hidden="true" />
-                Agent: {context.agentAccessMode === "read-only" ? "Read" : "Read / write"}
+                {context.agentAccessMode === "read-only" ? "Read" : "Read / write"}
                 <CaretDown size={10} aria-hidden="true" />
               </button>
               {modeMenuOpen && (

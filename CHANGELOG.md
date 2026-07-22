@@ -4,6 +4,12 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-07-22
+
+### Changed
+
+- Shorten the agent access badge from `Agent: Read / write` to `Read / write`.
+
 ## [0.2.6] - 2026-07-22
 
 ### Fixed
